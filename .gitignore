@@ -3,4 +3,4 @@ __pychache__
 .DS_Store
 .vscode/
 images/
-evaluation/plot_
+evaluation/loss_plots/*.png
