@@ -59,6 +59,7 @@ def main():
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
     trainer.train()
+    trainer.plot_losses()
 
 if __name__ == "__main__":
     main()

@@ -14,3 +14,6 @@ seed: 42
 batch_size: 32
 num_workers: 4
 pin_memory: true
+
+# training
+quick_test: true # if true, use only first 100 samples for quick testing
