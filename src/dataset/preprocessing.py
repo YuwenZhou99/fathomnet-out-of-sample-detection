@@ -35,6 +35,7 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     print(f"[INFO] Unique dives: train={train_df['dive_id'].nunique()} val={val_df['dive_id'].nunique()}")
 
     # 5) Category space
+    # this is weird since certain categories are not in train set. This gives error when calculating loss with mismatching shapes
     all_cat_ids = sorted({cid for labs in labels_df["labels"].tolist() for cid in labs})
     print(f"[INFO] num_classes={len(all_cat_ids)}")
 
@@ -42,10 +43,10 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     cat_map = load_category_key(general_cfg['category_key_csv'])
     # 6) DataLoaders
     train_tf, val_tf = build_transforms(general_cfg['image_size'])
-    train_ds = FathomNetMultiLabelDataset(train_df, all_cat_ids, general_cfg['image_dir'], general_cfg['img_ext'], transform=train_tf)
+    train_ds = FathomNetMultiLabelDataset(train_df, cat_map, general_cfg['image_dir'], general_cfg['img_ext'], transform=train_tf)
 
     # not sure if val should have augmentations
-    val_ds = FathomNetMultiLabelDataset(val_df, all_cat_ids, general_cfg['image_dir'], general_cfg['img_ext'], transform=val_tf)
+    val_ds = FathomNetMultiLabelDataset(val_df, cat_map, general_cfg['image_dir'], general_cfg['img_ext'], transform=val_tf)
 
     train_loader = DataLoader(
         train_ds, batch_size=general_cfg['batch_size'], shuffle=True,

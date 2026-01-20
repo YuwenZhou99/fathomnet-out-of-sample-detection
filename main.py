@@ -13,6 +13,7 @@ import yaml
 
 
 
+
 def load_yaml_config(general_yaml_path: str, model_yaml_path: str) -> dict:
     with open(general_yaml_path, "r") as inp:
         try:
@@ -44,6 +45,8 @@ def main():
 
     
     # TODO: model train and evaluation
+    loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')
+    optimizer = model_cfg.get('optimizer', 'Adam')
     RNBaseline = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True)
     trainer = Trainer(
         model=RNBaseline,
@@ -51,8 +54,8 @@ def main():
         val_loader=val_loader,
         general_cfg=general_cfg,
         model_cfg=model_cfg,
-        optimizer=None,
-        loss_fn=None,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
     trainer.train()
