@@ -56,7 +56,7 @@ def extract_dive_id_from_coco_url(url: str) -> Optional[str]:
     return dive if dive.isdigit() else dive  # sometimes not purely digits; keep as string
 
 
-def build_uuid_to_dive_map(coco_json_path: str) -> Dict[str, str]:
+def build_uuid_to_dive_map(coco_json_path: str) -> Tuple[Dict[str, str], list[dict]]:
     """
     Build mapping from uuid -> dive_id by reading COCO train.json images list.
     """
@@ -71,7 +71,9 @@ def build_uuid_to_dive_map(coco_json_path: str) -> Dict[str, str]:
         dive = extract_dive_id_from_coco_url(url)
         if uuid and dive:
             m[uuid] = str(dive)
-    return m
+    annotations = coco.get("annotations", [])
+
+    return m, annotations
 
 
 def dive_group_split(
@@ -85,6 +87,8 @@ def dive_group_split(
     """
     df = df.copy()
     df["dive_id"] = df["id"].map(uuid_to_dive)
+
+    
 
     # Drop samples without dive_id (cannot group)
     missing = df["dive_id"].isna().sum()
@@ -104,5 +108,6 @@ def dive_group_split(
     inter = set(train_df["dive_id"]) & set(val_df["dive_id"])
     if inter:
         raise RuntimeError(f"Dive leakage detected! Overlapping dive_ids: {list(inter)[:10]}")
+    
 
     return train_df, val_df

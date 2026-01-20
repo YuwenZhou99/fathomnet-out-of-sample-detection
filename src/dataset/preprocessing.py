@@ -13,15 +13,24 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     # 1) Load labels
     labels_df = pd.read_csv(general_cfg['label_csv'])
     labels_df["labels"] = labels_df["categories"].apply(parse_categories_cell)
-
     # 2) Filter to existing images
     labels_df = filter_existing_images(labels_df, general_cfg['image_dir'], general_cfg['img_ext'])
     # 3) Build uuid -> dive_id mapping from COCO train.json
-    uuid_to_dive = build_uuid_to_dive_map(general_cfg['coco_train_json'])
+    uuid_to_dive, annotations = build_uuid_to_dive_map(general_cfg['coco_train_json'])
+
+    # adding annotations to dataframe
+    labels_df["bounding_boxes"] = [[] for _ in range(len(labels_df))]
+    for ann in annotations:
+        try:
+            labels_df.iloc[ann['image_id']-1]["bounding_boxes"].append((ann['bbox'], ann['category_id']))
+        except IndexError:
+            print(f"IndexError for image_id {ann['image_id']}")
+
+    # not sure how robust this code is, might need to be changed
+    
     print(f"[INFO] uuid->dive_id map size: {len(uuid_to_dive)}")
 
-    # 4) Split by dive_id groups
-    train_df, val_df = dive_group_split(labels_df, uuid_to_dive, general_cfg['val_ratio'], general_cfg['seed'])
+    train_df, val_df = dive_group_split(labels_df, uuid_to_dive,general_cfg['val_ratio'], general_cfg['seed'])
     print(f"[INFO] Split by dive_id: train={len(train_df)} val={len(val_df)}")
     print(f"[INFO] Unique dives: train={train_df['dive_id'].nunique()} val={val_df['dive_id'].nunique()}")
 
