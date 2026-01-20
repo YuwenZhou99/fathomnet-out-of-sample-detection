@@ -4,8 +4,8 @@ from dataclasses import dataclass
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-from utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, load_category_key
-from dataset import FathomNetMultiLabelDataset, build_transforms
+from src.utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, load_category_key
+from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
 import yaml
 
 
@@ -55,6 +55,8 @@ def main():
     # 6) DataLoaders
     train_tf, val_tf = build_transforms(cfg['image_size'])
     train_ds = FathomNetMultiLabelDataset(train_df, all_cat_ids, cfg['image_dir'], cfg['img_ext'], transform=train_tf)
+    
+    # not sure if val should have augmentations
     val_ds = FathomNetMultiLabelDataset(val_df, all_cat_ids, cfg['image_dir'], cfg['img_ext'], transform=val_tf)
 
     train_loader = DataLoader(

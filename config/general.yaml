@@ -1,7 +1,7 @@
 # paths
 label_csv: "multilabel_classification/train.csv"
 coco_train_json: "object_detection/train.json"  # contains coco_url with dive_id
-category_key_csv: "category_key.csv"
+category_key_csv: "./src/dataset/category_key.csv"
 image_dir: "images"  # folder with uuid.png
 
 # data
