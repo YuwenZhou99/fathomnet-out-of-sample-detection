@@ -1,0 +1,3 @@
+freeze: true
+num_epochs: 50
+learning_rate: 0.001

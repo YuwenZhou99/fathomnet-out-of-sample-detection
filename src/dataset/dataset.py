@@ -25,6 +25,7 @@ class FathomNetMultiLabelDataset(Dataset):
         row = self.df.iloc[idx]
         uuid = row["id"]
         labels = row["labels"]
+        bounding_boxes = row.get("bounding_boxes", None)  # optional
 
         img_path = os.path.join(self.image_dir, uuid + self.img_ext)
         img = Image.open(img_path).convert("RGB")
@@ -43,7 +44,8 @@ class FathomNetMultiLabelDataset(Dataset):
             if cid in self.id2idx:
                 y[self.id2idx[cid]] = 1.0
 
-        return {"id": uuid, "image": img, "target": y}
+        #return {"id": uuid, "image": img, "target": y}
+        return img, y
 
 
 def build_transforms(image_size: int):

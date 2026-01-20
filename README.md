@@ -1,6 +1,6 @@
 # Out-of-Distribution Detection for Marine Species Classification
 
-This project studies out-of-distribution (OOD) detection for deep learning models trained on underwater imagery from the FathomNet dataset.
+This project studies out-of-distribution (OOD) detection for deep learning models trained on underwater imagery from the FathomNet dataset from https://www.kaggle.com/competitions/fathomnet-out-of-sample-detection
 
 ## Setup
 
@@ -19,6 +19,6 @@ pip install -r requirements.txt
 ```
 
 ## Authors
-- Yuwen Zhou (S5521351)
-- Tjeerd Morsch (S4567013)
-- Ebe Kort (S4143299)
+- Yuwen Zhou
+- Tjeerd Morsch 
+- Ebe Kort (e.kort.3@student.rug.nl)
