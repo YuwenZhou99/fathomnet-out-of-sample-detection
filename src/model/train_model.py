@@ -1,5 +1,5 @@
 from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
-from torch.optim import Adam, AdamW
+from torch.optim import Adam, AdamW, lr_scheduler
 import matplotlib.pyplot as plt
 import os
 import torch
@@ -36,20 +36,24 @@ def get_next_filename(base_path, ext="png"):
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None, unfreeze_epoch=None, smoothing_epsilon=None):
-        self.model = model
+        self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.general_cfg = general_cfg
         self.model_cfg = model_cfg
         self.lr = model_cfg.get('learning_rate', 0.001)
         self.wd = model_cfg.get('weight_decay', 0.0)
-        self.optimizer = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.wd) if optimizer == 'AdamW' else Adam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
-        self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else 
+        self.freeze = model_cfg.get('freeze', False)
+        if self.freeze:
+            self.freeze_backbone()
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        self.optimizer = AdamW(trainable_params, lr=self.lr, weight_decay=self.wd) if optimizer == 'AdamW' else Adam(trainable_params, lr=self.lr, weight_decay=self.wd)
+        self.scheduler = lr_scheduler.StepLR(self.optimizer, step_size=model_cfg.get('lr_step_size', 10), gamma=model_cfg.get('lr_gamma', 0.1))
+        self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else None
         # can also experiment with label smooting
         self.smoothing_epsilon = smoothing_epsilon
         self.device = device
-        self.freeze = model_cfg.get('freeze', False)
-        self.unfreeze_epoch = unfreeze_epoch
+        self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
         self.batch_size = model_cfg.get('batch_size', 32)
         self.train_losses = []
         self.val_losses = []
@@ -64,25 +68,27 @@ class Trainer:
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
 
-        if self.freeze:
-            self.freeze_backbone()
+        
 
         # Model check
-        print(f'[INFO] Model architecture:\n{type(self.model)}')
+        print(f'[INFO] Model architecture: {type(self.model)}')
 
         print(f'[INFO] Trainer initialized with {self.n_training_examples} training examples and {self.n_validation_examples} validation examples.')
 
 
     def freeze_backbone(self):
-        for param in self.model.parameters():
-            param.requires_grad = False
+        # freeze everything
+        for p in self.model.parameters():
+            p.requires_grad = False
 
-        if hasattr(self.model, 'fc'):
-            for param in self.model.fc.parameters():
-                param.requires_grad = True
-        if hasattr(self.model, 'head'):
-            for param in self.model.head.parameters():
-                param.requires_grad = True
+        # unfreeze common classifier heads
+        if hasattr(self.model.model, "fc"):  # ResNet-style
+            for p in self.model.model.fc.parameters():
+                p.requires_grad = True
+
+        if hasattr(self.model.model, "heads"):  # ViT-style
+            for p in self.model.model.heads.parameters():
+                p.requires_grad = True
 
 
     def smooth_labels(targets, epsilon=0.05):
@@ -94,8 +100,21 @@ class Trainer:
         for epoch in range(epochs):
             # Unfreeze backbone if specified
             if self.freeze and self.unfreeze_epoch is not None and epoch == self.unfreeze_epoch:
-                for param in self.model.parameters():
-                    param.requires_grad = True
+                for p in self.model.parameters():
+                    p.requires_grad = True
+
+                self.optimizer = AdamW(
+                    self.model.parameters(),
+                    lr=self.lr * 0.1,        # usually lower LR after unfreeze
+                    weight_decay=self.wd,
+                )
+
+                self.scheduler = lr_scheduler.StepLR(
+                    self.optimizer,
+                    step_size=self.model_cfg.get("lr_step_size", 10),
+                    gamma=self.model_cfg.get("lr_gamma", 0.1),
+                )
+
                 self.freeze = False
                 print(f"[INFO] Unfroze model backbone at epoch {epoch+1}.")
             self.model.train()
@@ -128,6 +147,8 @@ class Trainer:
                 # update bar text
                 pbar.set_postfix(loss=f"{loss.item():.4f}", avg=f"{(running_loss/self.n_training_examples):.4f}")
 
+            self.scheduler.step()
+
 
             epoch_avg_loss = running_loss / self.n_training_examples
             self.train_losses.append(epoch_avg_loss)
@@ -143,6 +164,8 @@ class Trainer:
                 all_logits = []
                 with torch.no_grad():
                     for batch_idx, (images, targets) in enumerate(self.val_loader):
+                        images = images.to(self.device)
+                        targets = targets.to(self.device)
                         logits = self.model.forward(images)
                         val_loss = self.loss_fn(logits, targets)
                         self.batch_val_losses.append(val_loss.item())

@@ -17,6 +17,7 @@ class ResNetBaseline(nn.Module):
             # Replace the final fully connected layer
             self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
 
+
     def forward(self, x):
         # expects input shape (B, C, H, W) https://docs.pytorch.org/vision/main/models/generated/torchvision.models.resnet50.html
         # images are resized to resize_size=[256] using interpolation=InterpolationMode.BILINEAR

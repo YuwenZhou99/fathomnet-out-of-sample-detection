@@ -5,9 +5,12 @@ layer_size: 256
 freeze: true
 num_epochs: 50
 learning_rate: 0.001
+lr_step_size: 10
+lr_gamma: 0.1
 weight_decay: 0.01
 loss_fn: BCEWithLogits
 optimizer: AdamW
+unfreeze_epoch: 2
 
 # early stopper
 patience: 1

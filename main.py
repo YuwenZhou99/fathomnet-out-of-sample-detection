@@ -13,7 +13,7 @@ from src.model.train_model import Trainer
 from src.dataset.preprocessing import prepare_dataloaders
 import yaml
 import sys
-
+from itertools import product
 
 
 def load_yaml_config(general_yaml_path: str, model_yaml_path: str) -> dict:
@@ -32,6 +32,15 @@ def load_yaml_config(general_yaml_path: str, model_yaml_path: str) -> dict:
     return general_cfg, model_cfg
 
 
+
+def expand_grid(grid_params: dict):
+    keys = grid_params.keys()
+    values = grid_params.values()
+    for combo in product(*values):
+        yield dict(zip(keys, combo))
+
+
+
 def set_seed(seed: int):
     # not sure if this seed is used in other files too
     random.seed(seed)
@@ -40,20 +49,19 @@ def set_seed(seed: int):
 
 def main():
     # load config
-    if len(sys.argv) == 2 and sys.argv[1] in ['resnet', 'efficientnet', 'vit_b_16', 'convnext-tiny']:
+    if len(sys.argv) == 2 and sys.argv[1] in ['resnet', 'efficientnet', 'vit_b_16', 'convnext-tiny', 'grid']:
         model_yaml_path = f"./config/{sys.argv[1]}_baseline.yaml"
     else:
-        print("Usage: python main.py [resnet|efficientnet|vit_b_16|convnext-tiny]")
+        print("Usage: python main.py [resnet|efficientnet|vit_b_16|convnext-tiny|grid]")
         quit()
+    if sys.argv[1] == 'grid':
+        model_yaml_path = f"./config/resnet_baseline.yaml"  # placeholder, will be overridden in grid search
     general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path=model_yaml_path)
     set_seed(general_cfg['seed'])
     # os.makedirs(cfg.split_dir, exist_ok=True)
     train_loader, val_loader, cat_map = prepare_dataloaders(general_cfg)
-
     pos_weight_tensor = compute_pos_weight_tensor(train_loader, device='cuda' if torch.cuda.is_available() else 'cpu')
-
     
-    # TODO: model train and evaluation
     loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')
     optimizer = model_cfg.get('optimizer', 'Adam')
 
@@ -61,9 +69,15 @@ def main():
         model = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
     elif sys.argv[1] == 'vit_b_16':
         model = ViTBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
+    elif sys.argv[1] == 'grid':
+        if not general_cfg.get('grid_search', False):
+            raise NotImplementedError("Grid search not implemented yet.")
+        grid_params = general_cfg.get('grid_params', {})
+        configs = list(expand_grid(grid_params))
+        print(len(configs))
+        quit()
     else:
         raise NotImplementedError(f"Model {sys.argv[1]} not implemented yet.")
-        quit()
     
     trainer = Trainer(
         model=model,

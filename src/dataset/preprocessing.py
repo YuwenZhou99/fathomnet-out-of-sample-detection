@@ -16,7 +16,7 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     labels_df["labels"] = labels_df["categories"].apply(parse_categories_cell)
     # parse labels_df to use only first 100 samples for quick testing
     if general_cfg.get('quick_test', False):
-        labels_df = labels_df.head(100)
+        labels_df = labels_df.head(10)
     # 2) Filter to existing images
     labels_df = filter_existing_images(labels_df, general_cfg['image_dir'], general_cfg['img_ext'])
     # 3) Build uuid -> dive_id mapping from COCO train.json
