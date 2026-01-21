@@ -35,14 +35,18 @@ def get_next_filename(base_path, ext="png"):
 
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None, unfreeze_epoch=None):
+    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None, unfreeze_epoch=None, smoothing_epsilon=None):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.general_cfg = general_cfg
         self.model_cfg = model_cfg
-        self.optimizer = AdamW(self.model.parameters(), lr=model_cfg.get('learning_rate', 0.001)) if optimizer == 'AdamW' else Adam(self.model.parameters(), lr=model_cfg.get('learning_rate', 0.001))
-        self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else loss_fn
+        self.lr = model_cfg.get('learning_rate', 0.001)
+        self.wd = model_cfg.get('weight_decay', 0.0)
+        self.optimizer = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.wd) if optimizer == 'AdamW' else Adam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
+        self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else 
+        # can also experiment with label smooting
+        self.smoothing_epsilon = smoothing_epsilon
         self.device = device
         self.freeze = model_cfg.get('freeze', False)
         self.unfreeze_epoch = unfreeze_epoch
@@ -80,6 +84,11 @@ class Trainer:
             for param in self.model.head.parameters():
                 param.requires_grad = True
 
+
+    def smooth_labels(targets, epsilon=0.05):
+        # for out-of-sample detection, might not be useful
+        return targets * (1 - epsilon) + 0.5 * epsilon
+
     def train(self):
         epochs = self.model_cfg['num_epochs']
         for epoch in range(epochs):
@@ -105,6 +114,8 @@ class Trainer:
             for images, targets in pbar:
                 images = images.to(self.device)
                 targets = targets.to(self.device)
+                if self.smoothing_epsilon is not None:
+                    targets = self.smooth_labels(targets, self.smoothing_epsilon)
                 self.optimizer.zero_grad()
                 logits = self.model(images)
                 # compute loss, backpropagation, optimizer
