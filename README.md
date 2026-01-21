@@ -18,6 +18,11 @@ Install dependencies
 pip install -r requirements.txt
 ```
 
+Run model
+```bash
+python main.py [resnet|vit_b_16]
+```
+
 ## Authors
 - Yuwen Zhou
 - Tjeerd Morsch 
