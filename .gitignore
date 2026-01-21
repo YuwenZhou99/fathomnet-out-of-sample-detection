@@ -5,3 +5,5 @@ __pychache__
 images/
 evaluation/loss_plots/*.png
 *.pth
+evaluation/model_checkpoints/*.pth
+warnings.log

@@ -13,7 +13,8 @@ seed: 42
 # dataloader
 batch_size: 32
 num_workers: 4
-pin_memory: true
+pin_memory: false # set true when using GPU
 
 # training
-quick_test: false # if true, use only first 100 samples for quick testing
+quick_test: true # if true, use only first 100 samples for quick testing
+save_model: false
