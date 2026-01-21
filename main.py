@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 from src.utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, load_category_key
 from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
+from src.dataset.statistics import compute_pos_weight_tensor
 from src.network.resnet_baseline import ResNetBaseline
 from src.model.train_model import Trainer
 from src.dataset.preprocessing import prepare_dataloaders
@@ -43,11 +44,13 @@ def main():
     # os.makedirs(cfg.split_dir, exist_ok=True)
     train_loader, val_loader, cat_map = prepare_dataloaders(general_cfg)
 
+    pos_weight_tensor = compute_pos_weight_tensor(train_loader, device='cuda' if torch.cuda.is_available() else 'cpu')
+
     
     # TODO: model train and evaluation
     loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')
     optimizer = model_cfg.get('optimizer', 'Adam')
-    RNBaseline = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True)
+    RNBaseline = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
     trainer = Trainer(
         model=RNBaseline,
         train_loader=train_loader,
@@ -56,7 +59,8 @@ def main():
         model_cfg=model_cfg,
         optimizer=optimizer,
         loss_fn=loss_fn,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        pos_weight_tensor=pos_weight_tensor
     )
     trainer.train()
     trainer.plot_losses()

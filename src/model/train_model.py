@@ -35,14 +35,14 @@ def get_next_filename(base_path, ext="png"):
 
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device):
+    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.general_cfg = general_cfg
         self.model_cfg = model_cfg
         self.optimizer = AdamW(self.model.parameters(), lr=model_cfg.get('learning_rate', 0.001)) if optimizer == 'AdamW' else Adam(self.model.parameters(), lr=model_cfg.get('learning_rate', 0.001))
-        self.loss_fn = BCEWithLogitsLoss() if loss_fn == 'BCEWithLogits' else loss_fn
+        self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else loss_fn
         self.device = device
         self.freeze = model_cfg.get('freeze', False)
         self.batch_size = model_cfg.get('batch_size', 32)
@@ -142,7 +142,7 @@ class Trainer:
         if len(self.val_losses) > 0:
             plt.plot(self.val_losses, label='Validation Loss (per batch)')
 
-        plt.xlabel('Batches')
+        plt.xlabel('Epochs')
         plt.ylabel('Loss')
         plt.title('Training and Validation Loss per Batch')
         plt.legend()
