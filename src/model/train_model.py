@@ -2,6 +2,7 @@ from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
 from torch.optim import Adam, AdamW
 import matplotlib.pyplot as plt
 import os
+import torch
 
 def get_next_filename(base_path, ext="png"):
     i = 0
@@ -27,6 +28,10 @@ class Trainer:
         self.val_losses = []
         self.batch_train_losses = []
         self.batch_val_losses = []
+        self.n_training_examples = len(train_loader.dataset)
+        self.n_validation_examples = len(val_loader.dataset) if val_loader is not None else 0
+
+        print(f'[INFO] Trainer initialized with {self.n_training_examples} training examples and {self.n_validation_examples} validation examples.')
 
     def train(self):
         epochs = self.model_cfg['num_epochs']
@@ -39,31 +44,28 @@ class Trainer:
             for batch_idx, (images, targets) in enumerate(self.train_loader):
                 print(f'Batch {batch_idx+1}/{len(self.train_loader)}')
                 self.optimizer.zero_grad()
-                logits = self.model.forward(images)
+                logits = self.model(images)
                 # compute loss, backpropagation, optimizer
                 loss = self.loss_fn(logits, targets)
                 self.batch_train_losses.append(loss.item())
-                running_loss += loss.item()
+                running_loss += loss.item() * images.size(0)
                 loss.backward()
                 self.optimizer.step()
 
-            # add functionality so that last loss for last batch is multiplied by batch size to get correct average
-            if batch_idx == len(self.train_loader) - 1:
-                last_loss = loss.item() / images.size(0) * self.batch_size
-                running_loss = running_loss - loss.item() + last_loss
-            epoch_avg_loss = running_loss / len(self.train_loader)
+            epoch_avg_loss = running_loss / self.n_training_examples
             self.train_losses.append(epoch_avg_loss)
             print(f"Epoch {epoch+1} - Training loss: {epoch_avg_loss}")
 
             # Validation loop can be added here
             if self.val_loader is not None:
                 self.model.eval()
-                for batch_idx, (images, targets) in enumerate(self.val_loader):
-                    logits = self.model.forward(images)
-                    val_loss = self.loss_fn(logits, targets)
-                    self.batch_val_losses.append(val_loss.item())
-                    running_val_loss += val_loss.item()
-                epoch_avg_val_loss = running_val_loss / len(self.val_loader)
+                with torch.no_grad():
+                    for batch_idx, (images, targets) in enumerate(self.val_loader):
+                        logits = self.model.forward(images)
+                        val_loss = self.loss_fn(logits, targets)
+                        self.batch_val_losses.append(val_loss.item())
+                        running_val_loss += val_loss.item() * images.size(0)
+                epoch_avg_val_loss = running_val_loss / self.n_validation_examples
                 self.val_losses.append(epoch_avg_val_loss)
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")
 
@@ -80,6 +82,7 @@ class Trainer:
         plt.legend()
 
         filename = get_next_filename("evaluation/loss_plots/plot")
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         plt.savefig(filename, dpi=300, bbox_inches="tight")
         plt.show()
         plt.close()
