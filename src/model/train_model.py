@@ -35,7 +35,7 @@ def get_next_filename(base_path, ext="png"):
 
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None):
+    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None, unfreeze_epoch=None):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -45,6 +45,7 @@ class Trainer:
         self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else loss_fn
         self.device = device
         self.freeze = model_cfg.get('freeze', False)
+        self.unfreeze_epoch = unfreeze_epoch
         self.batch_size = model_cfg.get('batch_size', 32)
         self.train_losses = []
         self.val_losses = []
@@ -59,14 +60,35 @@ class Trainer:
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
 
+        if self.freeze:
+            self.freeze_backbone()
+
         # Model check
-        print(f'[INFO] Model architecture:\n{self.model}, {type(self.model)}')
+        print(f'[INFO] Model architecture:\n{type(self.model)}')
 
         print(f'[INFO] Trainer initialized with {self.n_training_examples} training examples and {self.n_validation_examples} validation examples.')
+
+
+    def freeze_backbone(self):
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        if hasattr(self.model, 'fc'):
+            for param in self.model.fc.parameters():
+                param.requires_grad = True
+        if hasattr(self.model, 'head'):
+            for param in self.model.head.parameters():
+                param.requires_grad = True
 
     def train(self):
         epochs = self.model_cfg['num_epochs']
         for epoch in range(epochs):
+            # Unfreeze backbone if specified
+            if self.freeze and self.unfreeze_epoch is not None and epoch == self.unfreeze_epoch:
+                for param in self.model.parameters():
+                    param.requires_grad = True
+                self.freeze = False
+                print(f"[INFO] Unfroze model backbone at epoch {epoch+1}.")
             self.model.train()
             running_loss = 0.0
             last_loss = 0.0
@@ -121,12 +143,12 @@ class Trainer:
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")
                 # evaluate metrics
                 all_targets = torch.cat(all_targets, dim=0).numpy()
-                all_predictions = torch.sigmoid(torch.cat(all_logits, dim=0)).numpy()
-                all_predictions = (all_predictions >= 0.5).astype(int)
+                probs = torch.sigmoid(torch.cat(all_logits, dim=0)).numpy()
+                all_predictions = (probs >= 0.5).astype(int)
                 try:
                     #print(f"printing shapes: {all_targets.shape}, {all_predictions.shape}\nAnd Types: {all_targets.dtype}, {all_predictions.dtype}")
                     # Might be an error here because of mismatching dtypes, however precision still gets calculated so might be ok.
-                    roc_auc = roc_auc_score(all_targets, all_predictions, average='weighted')
+                    roc_auc = roc_auc_score(all_targets, probs, average='weighted')
                     avg_precision = average_precision_score(all_targets, all_predictions, average='weighted')
                     f1 = f1_score(all_targets, all_predictions, average='weighted', zero_division=0)
                     print(f"Epoch {epoch+1} - ROC AUC: {roc_auc:.4f}, Average Precision: {avg_precision:.4f}, F1 Score: {f1:.4f}")
