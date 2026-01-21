@@ -16,4 +16,4 @@ num_workers: 4
 pin_memory: true
 
 # training
-quick_test: true # if true, use only first 100 samples for quick testing
+quick_test: false # if true, use only first 100 samples for quick testing

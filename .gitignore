@@ -4,3 +4,4 @@ __pychache__
 .vscode/
 images/
 evaluation/loss_plots/*.png
+*.pth

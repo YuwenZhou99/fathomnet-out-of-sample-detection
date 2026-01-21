@@ -1,5 +1,12 @@
+# model name
+model_name: resnet50_baseline
+
 freeze: true
-num_epochs: 2
+num_epochs: 50
 learning_rate: 0.001
 loss_fn: BCEWithLogits
 optimizer: AdamW
+
+# early stopper
+patience: 1
+min_delta: 0.0

@@ -3,6 +3,8 @@ from torch.optim import Adam, AdamW
 import matplotlib.pyplot as plt
 import os
 import torch
+from tqdm.auto import tqdm
+from src.model.earlystopper import EarlyStopper
 
 def get_next_filename(base_path, ext="png"):
     i = 0
@@ -30,6 +32,11 @@ class Trainer:
         self.batch_val_losses = []
         self.n_training_examples = len(train_loader.dataset)
         self.n_validation_examples = len(val_loader.dataset) if val_loader is not None else 0
+        self.early_stopper = EarlyStopper(
+            patience=model_cfg.get('patience', 1),
+            min_delta=model_cfg.get('min_delta', 0.0)
+        )
+        self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
 
         print(f'[INFO] Trainer initialized with {self.n_training_examples} training examples and {self.n_validation_examples} validation examples.')
 
@@ -41,8 +48,17 @@ class Trainer:
             last_loss = 0.0
             running_val_loss = 0.0
             last_val_loss = 0.0
-            for batch_idx, (images, targets) in enumerate(self.train_loader):
-                print(f'Batch {batch_idx+1}/{len(self.train_loader)}')
+
+            pbar = tqdm(
+            self.train_loader,
+            total=len(self.train_loader),
+            desc=f"Epoch {epoch+1}/{epochs}",
+            unit="batch",
+            leave=False,   # set True if you want to keep each epoch bar
+            )
+            for images, targets in pbar:
+                images = images.to(self.device)
+                targets = targets.to(self.device)
                 self.optimizer.zero_grad()
                 logits = self.model(images)
                 # compute loss, backpropagation, optimizer
@@ -52,9 +68,15 @@ class Trainer:
                 loss.backward()
                 self.optimizer.step()
 
+                # update bar text
+                pbar.set_postfix(loss=f"{loss.item():.4f}", avg=f"{(running_loss/self.n_training_examples):.4f}")
+
+
             epoch_avg_loss = running_loss / self.n_training_examples
             self.train_losses.append(epoch_avg_loss)
             print(f"Epoch {epoch+1} - Training loss: {epoch_avg_loss}")
+
+            torch.save(self.model.state_dict(), os.path.join(self.save_dir, f"{self.model_cfg['model_name']}_{epoch+1}.pth"))
 
             # Validation loop can be added here
             if self.val_loader is not None:
@@ -68,6 +90,10 @@ class Trainer:
                 epoch_avg_val_loss = running_val_loss / self.n_validation_examples
                 self.val_losses.append(epoch_avg_val_loss)
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")
+                # Early stopping check
+                if self.early_stopper.early_stop(epoch_avg_val_loss):
+                    print(f"Early stopping triggered at epoch {epoch+1}")
+                    break
 
     def plot_losses(self):
         plt.figure(figsize=(10, 5))
