@@ -19,4 +19,7 @@ class ResNetBaseline(nn.Module):
 
     def forward(self, x):
         # expects input shape (B, C, H, W) https://docs.pytorch.org/vision/main/models/generated/torchvision.models.resnet50.html
+        # images are resized to resize_size=[256] using interpolation=InterpolationMode.BILINEAR
+        # followed by a central crop of crop_size=[224]. finally values are rescaled to [0.0, 1.0]
+        # and than normalized using mean=[0.485, 0.456, 0.406] and std=[0.229, 0.224, 0.225]
         return self.model(x)

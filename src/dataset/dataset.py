@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import Any, List
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+import cv2
 
 class FathomNetMultiLabelDataset(Dataset):
     def __init__(self, df: pd.DataFrame, all_cat_ids: List[int], image_dir: str, img_ext: str, transform=None):
@@ -48,25 +49,26 @@ class FathomNetMultiLabelDataset(Dataset):
         return img, y
 
 
-def build_transforms(image_size: int):
+def build_transforms(image_size: int, resize_size: int, crop_size: int, interpolation: int,
+                     augmentations: dict[str, Any],
+                     mean: List[float], std: List[float]) -> tuple[A.core.composition.Compose, A.core.composition.Compose]:
     # Train: Albumentations augmentation
     train_tf = A.Compose([
-        A.RandomResizedCrop(size=(image_size, image_size), scale=(0.85, 1.0), p=1.0),
-        A.HorizontalFlip(p=0.5),
-        A.Rotate(limit=10, p=0.3),
-        A.RandomBrightnessContrast(p=0.5),
-        A.HueSaturationValue(p=0.2),
-        A.GaussNoise(std_range=(0.2, 0.4), p=0.3),
-
-        A.Normalize(mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225)),
+        A.RandomResizedCrop(size=(image_size, image_size), scale=(0.85, 1.0), p=1.0, interpolation=interpolation),
+        A.HorizontalFlip(p=augmentations.get('horizontal_flip', 0.5)),
+        A.Rotate(limit=augmentations.get('rotation_limit', 10), p=augmentations.get('rotation_prob', 0.3)),
+        A.RandomBrightnessContrast(p=augmentations.get('brightness_contrast', 0.5)),
+        A.HueSaturationValue(p=augmentations.get('hue_saturation', 0.2)),
+        A.GaussNoise(std_range=(augmentations.get('gauss_noise', [0.2, 0.4])[0], augmentations.get('gauss_noise', [0.2, 0.4])[1]), p=augmentations.get('gauss_noise_prob', 0.3)),
+        A.Normalize(mean=mean,
+                    std=std),
         ToTensorV2(),
     ])
 
     val_tf = A.Compose([
         A.Resize(height=image_size, width=image_size),
-        A.Normalize(mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225)),
+        A.Normalize(mean=mean,
+                    std=std),
         ToTensorV2(),
     ])
     return train_tf, val_tf

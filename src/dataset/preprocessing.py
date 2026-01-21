@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from src.utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, load_category_key
 from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
+import cv2
 
 def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[int, str]]:
 
@@ -45,7 +46,13 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     # category names
     cat_map = load_category_key(general_cfg['category_key_csv'])
     # 6) DataLoaders
-    train_tf, val_tf = build_transforms(general_cfg['image_size'])
+    if general_cfg.get('interpolation', 'bilinear') == 'bilinear':
+        interpolation = cv2.INTER_LINEAR
+    train_tf, val_tf = build_transforms(general_cfg['image_size'], general_cfg.get('resize_size', 256), general_cfg.get('crop_size', 224),
+                                        interpolation=interpolation,
+                                        augmentations=general_cfg.get('augmentations', {}),
+                                        mean=general_cfg.get('mean', [0.485, 0.456, 0.406]),
+                                        std=general_cfg.get('std', [0.229, 0.224, 0.225]))
     train_ds = FathomNetMultiLabelDataset(train_df, cat_map, general_cfg['image_dir'], general_cfg['img_ext'], transform=train_tf)
 
     # not sure if val should have augmentations

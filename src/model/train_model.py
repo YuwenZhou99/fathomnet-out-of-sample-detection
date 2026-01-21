@@ -59,6 +59,9 @@ class Trainer:
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
 
+        # Model check
+        print(f'[INFO] Model architecture:\n{self.model}, {type(self.model)}')
+
         print(f'[INFO] Trainer initialized with {self.n_training_examples} training examples and {self.n_validation_examples} validation examples.')
 
     def train(self):

@@ -8,10 +8,11 @@ from src.utils import parse_categories_cell, filter_existing_images, build_uuid_
 from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
 from src.dataset.statistics import compute_pos_weight_tensor
 from src.network.resnet_baseline import ResNetBaseline
+from src.network.vit_baseline import ViTBaseline
 from src.model.train_model import Trainer
 from src.dataset.preprocessing import prepare_dataloaders
 import yaml
-
+import sys
 
 
 
@@ -39,7 +40,12 @@ def set_seed(seed: int):
 
 def main():
     # load config
-    general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path="./config/resnet_baseline.yaml")
+    if len(sys.argv) == 2 and sys.argv[1] in ['resnet', 'efficientnet', 'vit_b_16', 'convnext-tiny']:
+        model_yaml_path = f"./config/{sys.argv[1]}_baseline.yaml"
+    else:
+        print("Usage: python main.py [resnet|efficientnet|vit_b_16|convnext-tiny]")
+        quit()
+    general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path=model_yaml_path)
     set_seed(general_cfg['seed'])
     # os.makedirs(cfg.split_dir, exist_ok=True)
     train_loader, val_loader, cat_map = prepare_dataloaders(general_cfg)
@@ -50,9 +56,17 @@ def main():
     # TODO: model train and evaluation
     loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')
     optimizer = model_cfg.get('optimizer', 'Adam')
-    RNBaseline = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
+
+    if sys.argv[1] == 'resnet':
+        model = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
+    elif sys.argv[1] == 'vit_b_16':
+        model = ViTBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
+    else:
+        raise NotImplementedError(f"Model {sys.argv[1]} not implemented yet.")
+        quit()
+    
     trainer = Trainer(
-        model=RNBaseline,
+        model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         general_cfg=general_cfg,
