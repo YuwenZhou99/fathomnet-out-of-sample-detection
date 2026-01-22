@@ -1,3 +1,4 @@
+import json
 import os
 import random
 from dataclasses import dataclass
@@ -35,6 +36,15 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     print(f"[INFO] uuid->dive_id map size: {len(uuid_to_dive)}")
 
     train_df, val_df = dive_group_split(labels_df, uuid_to_dive,general_cfg['val_ratio'], general_cfg['seed'])
+    os.makedirs(general_cfg['split_dir'], exist_ok=True)
+    # check if train/val ids files already exist
+    if not os.path.exists(os.path.join(general_cfg['split_dir'], 'train_ids.json')) and not os.path.exists(os.path.join(general_cfg['split_dir'], 'val_ids.json')):    
+        with open(os.path.join(general_cfg['split_dir'], 'train_ids.json'), 'w') as f:
+            lst = train_df['id'].tolist()
+            json.dump(lst, f)
+        with open(os.path.join(general_cfg['split_dir'], 'val_ids.json'), 'w') as f:
+            lst = val_df['id'].tolist()
+            json.dump(lst, f)
     print(f"[INFO] Split by dive_id: train={len(train_df)} val={len(val_df)}")
     print(f"[INFO] Unique dives: train={train_df['dive_id'].nunique()} val={val_df['dive_id'].nunique()}")
 

@@ -3,6 +3,7 @@ label_csv: "multilabel_classification/train.csv"
 coco_train_json: "object_detection/train.json"  # contains coco_url with dive_id
 category_key_csv: "./src/dataset/category_key.csv"
 image_dir: "images"  # folder with uuid.png
+split_dir: "data_splits"  # folder to save train/val splits
 
 # data
 img_ext: ".png"
@@ -16,7 +17,7 @@ num_workers: 4
 pin_memory: false # set true when using GPU
 
 # training
-quick_test: true # if true, use only first 100 samples for quick testing
+quick_test: false # if true, use only first 100 samples for quick testing
 save_model: false
 
 # grid search
