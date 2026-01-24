@@ -12,6 +12,9 @@ from sklearn.exceptions import UndefinedMetricWarning
 import warnings
 import logging
 from sklearn.exceptions import UndefinedMetricWarning
+import pandas as pd
+from evaluation.fathomnet_metric import score
+import numpy as np
 
 logging.basicConfig(
     filename="warnings.log",
@@ -91,10 +94,23 @@ class Trainer:
                 p.requires_grad = True
 
 
+    @staticmethod
     def smooth_labels(targets, epsilon=0.05):
         # for out-of-sample detection, might not be useful
         return targets * (1 - epsilon) + 0.5 * epsilon
+    
 
+    @staticmethod
+    def energy_score(logits, T=1.0):
+        # Use stable energy score calculation
+        return -torch.logsumexp(logits, dim=1)
+    
+    
+    @staticmethod
+    def energy_to_osd(energy, tau, alpha=1.0):
+        return torch.sigmoid(alpha * (energy - tau))
+        
+    
     def train(self):
         epochs = self.model_cfg['num_epochs']
         for epoch in range(epochs):
@@ -123,29 +139,31 @@ class Trainer:
             running_val_loss = 0.0
             last_val_loss = 0.0
 
-            pbar = tqdm(
-            self.train_loader,
-            total=len(self.train_loader),
-            desc=f"Epoch {epoch+1}/{epochs}",
-            unit="batch",
-            leave=False,   # set True if you want to keep each epoch bar
-            )
-            for images, targets in pbar:
-                images = images.to(self.device)
-                targets = targets.to(self.device)
-                if self.smoothing_epsilon is not None:
-                    targets = self.smooth_labels(targets, self.smoothing_epsilon)
-                self.optimizer.zero_grad()
-                logits = self.model(images)
-                # compute loss, backpropagation, optimizer
-                loss = self.loss_fn(logits, targets)
-                self.batch_train_losses.append(loss.item())
-                running_loss += loss.item() * images.size(0)
-                loss.backward()
-                self.optimizer.step()
+            if not self.general_cfg['test_eval']:
+                pbar = tqdm(
+                self.train_loader,
+                total=len(self.train_loader),
+                desc=f"Epoch {epoch+1}/{epochs}",
+                unit="batch",
+                leave=False,   # set True if you want to keep each epoch bar
+                )
+                for images, targets, _ in pbar:
+                    
+                    images = images.to(self.device)
+                    targets = targets.to(self.device)
+                    if self.smoothing_epsilon is not None:
+                        targets = self.smooth_labels(targets, self.smoothing_epsilon)
+                    self.optimizer.zero_grad()
+                    logits = self.model(images)
+                    # compute loss, backpropagation, optimizer
+                    loss = self.loss_fn(logits, targets)
+                    self.batch_train_losses.append(loss.item())
+                    running_loss += loss.item() * images.size(0)
+                    loss.backward()
+                    self.optimizer.step()
 
-                # update bar text
-                pbar.set_postfix(loss=f"{loss.item():.4f}", avg=f"{(running_loss/self.n_training_examples):.4f}")
+                    # update bar text
+                    pbar.set_postfix(loss=f"{loss.item():.4f}", avg=f"{(running_loss/self.n_training_examples):.4f}")
 
             self.scheduler.step()
 
@@ -162,16 +180,68 @@ class Trainer:
                 self.model.eval()
                 all_targets = []
                 all_logits = []
+                rows = []
+                row_targets = []
+
                 with torch.no_grad():
-                    for batch_idx, (images, targets) in enumerate(self.val_loader):
+                    for batch_idx, (images, targets, image_id, osd_target) in enumerate(self.val_loader):
                         images = images.to(self.device)
                         targets = targets.to(self.device)
                         logits = self.model.forward(images)
+                        print(f'target: {targets.shape}\n{targets}')
+                        print(f'logits: {logits.shape}\n{logits}')
+                        probs = torch.softmax(logits, dim=1)
+                        predictions = (logits >= 0.5).to(torch.int)
+                        print(f'predictions: {predictions.shape}\n{predictions}')
+
+                        # top_k might have to filtered on threshold because it now always outputs 20 predictions
+                        top_k = torch.topk(probs, self.general_cfg['top_k'])
+                        print(f'top_k: {top_k[1]}')
+
+                        # this has to be checked
+                        energy = self.energy_score(logits)
+                        tau = torch.quantile(energy, 0.95)
+                        osd_prob = self.energy_to_osd(energy, tau=tau)
+
+                        print(f'top_k[1][i]: {top_k[1][0]}')
+                        '''
+                        for i in range(targets.shape[0]):
+                            row = {
+                                "imaged_id": image_id[i],
+                                "categories": " ".join([str(k) for k in top_k[1][i].tolist()]),
+                                "osd": float(osd_prob[i])
+                            }
+                            rows.append(row)'''
+                        
+                        for i in range(targets.shape[0]):
+                            row = {
+                                "image_id": image_id[i],
+                                "categories": " ".join([str(k) for k in top_k[1][i].tolist()]) + f', {str(osd_prob[i])}',
+                                "osd": float(osd_prob[i])
+                            }
+                            row_target = {
+                                "image_id": image_id[i],
+                                "categories": " ".join([str(idx.item()) for idx in torch.where(targets[i] == 1)[0]]),
+                                "osd": float(osd_target[i])
+                            }
+                            rows.append(row)
+                            row_targets.append(row_target)
+                            print(row_target['categories'])
+
+                        # still need to implement this
+                        #energy_score = -torch.logsumexp(logits)
+                        #print(f'{energy_score.shape}\n{energy_score}'
+                        
+
+                        
                         val_loss = self.loss_fn(logits, targets)
                         self.batch_val_losses.append(val_loss.item())
                         running_val_loss += val_loss.item() * images.size(0)
                         all_targets.append(targets.cpu())
                         all_logits.append(logits.cpu())
+
+                predictions_df = pd.DataFrame(rows)
+                target_df = pd.DataFrame(row_targets)
                 epoch_avg_val_loss = running_val_loss / self.n_validation_examples
                 self.val_losses.append(epoch_avg_val_loss)
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")
@@ -179,15 +249,28 @@ class Trainer:
                 all_targets = torch.cat(all_targets, dim=0).numpy()
                 probs = torch.sigmoid(torch.cat(all_logits, dim=0)).numpy()
                 all_predictions = (probs >= 0.5).astype(int)
-                try:
-                    #print(f"printing shapes: {all_targets.shape}, {all_predictions.shape}\nAnd Types: {all_targets.dtype}, {all_predictions.dtype}")
-                    # Might be an error here because of mismatching dtypes, however precision still gets calculated so might be ok.
-                    roc_auc = roc_auc_score(all_targets, probs, average='weighted')
-                    avg_precision = average_precision_score(all_targets, all_predictions, average='weighted')
-                    f1 = f1_score(all_targets, all_predictions, average='weighted', zero_division=0)
-                    print(f"Epoch {epoch+1} - ROC AUC: {roc_auc:.4f}, Average Precision: {avg_precision:.4f}, F1 Score: {f1:.4f}")
-                except ValueError as e:
-                    print(f"Could not compute ROC AUC or Average Precision: {e}")
+                pos = all_targets.sum(axis=0)
+                valid = (pos > 0) & (pos < all_targets.shape[0])
+
+                if valid.sum() == 0:
+                    print("ROC-AUC undefined: no class has both positive and negative samples in validation.")
+                else:
+                    roc_auc = roc_auc_score(all_targets[:, valid], probs[:, valid], average="weighted")
+                    avg_precision = average_precision_score(all_targets[:, valid], probs[:, valid], average="weighted")
+                    fathomnet_score = score(
+                        target_df,
+                        predictions_df,
+                        'image_id',
+                        'osd',
+                        20
+                    )
+                    print(fathomnet_score)
+
+                    preds = (probs >= 0.5).astype(int)
+                    f1 = f1_score(all_targets[:, valid], preds[:, valid], average="weighted", zero_division=0)
+
+                    print(f"valid labels: {valid.sum()}/{all_targets.shape[1]}")
+                    print(f"ROC AUC: {roc_auc:.4f}, AP: {avg_precision:.4f}, F1: {f1:.4f}")
 
                 # Early stopping check
                 if self.early_stopper.early_stop(epoch_avg_val_loss):
@@ -211,3 +294,4 @@ class Trainer:
         plt.savefig(filename, dpi=300, bbox_inches="tight")
         plt.show()
         plt.close()
+

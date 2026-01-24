@@ -5,7 +5,7 @@ def compute_pos_weight_tensor(train_loader, device="cpu"):
     pos = None
     n_samples = 0
 
-    for _, targets in train_loader:
+    for _, targets, _, _ in train_loader:
         # targets: (B, C) with 0/1 (or bool)
         targets = targets.detach()
         if targets.dtype != torch.float32:

@@ -17,8 +17,11 @@ num_workers: 4
 pin_memory: false # set true when using GPU
 
 # training
-quick_test: false # if true, use only first 100 samples for quick testing
+quick_test: true # if true, use only first n samples
+n_samples: 100 # n samples
 save_model: false
+test_eval: true # set to true if you want to skip training and debug eval loop
+top_k: 20
 
 # grid search
 grid_search: true
