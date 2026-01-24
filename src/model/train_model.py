@@ -38,7 +38,7 @@ def get_next_filename(base_path, ext="png"):
 
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None, unfreeze_epoch=None, smoothing_epsilon=None):
+    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None,):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -54,7 +54,7 @@ class Trainer:
         self.scheduler = lr_scheduler.StepLR(self.optimizer, step_size=model_cfg.get('lr_step_size', 10), gamma=model_cfg.get('lr_gamma', 0.1))
         self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else None
         # can also experiment with label smooting
-        self.smoothing_epsilon = smoothing_epsilon
+        self.smoothing_epsilon = general_cfg.get('smooting_epsilon', 0)
         self.device = device
         self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
         self.batch_size = model_cfg.get('batch_size', 32)
@@ -71,8 +71,6 @@ class Trainer:
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
 
-        
-
         # Model check
         print(f'[INFO] Model architecture: {type(self.model)}')
 
@@ -80,6 +78,9 @@ class Trainer:
 
 
     def freeze_backbone(self):
+        '''
+        freezing backbone of model, so only head/fc is trainable
+        '''
         # freeze everything
         for p in self.model.parameters():
             p.requires_grad = False
@@ -96,22 +97,44 @@ class Trainer:
 
     @staticmethod
     def smooth_labels(targets, epsilon=0.05):
+        '''
+        smoothing labels for robustness
+        
+        :param targets: labels to be smoothened
+        :param epsilon: amount of smoothing
+        '''
         # for out-of-sample detection, might not be useful
         return targets * (1 - epsilon) + 0.5 * epsilon
     
 
     @staticmethod
     def energy_score(logits, T=1.0):
+        '''
+        Calculating energy score to implicitly determine osd
+        
+        :param logits: logits predicted by model
+        :param T: hyperparameter to increase/decrease confidence
+        '''
         # Use stable energy score calculation
-        return -torch.logsumexp(logits, dim=1)
+        return -torch.logsumexp(logits/T, dim=1)
     
     
     @staticmethod
     def energy_to_osd(energy, tau, alpha=1.0):
+        '''
+        normalzing osd score
+        
+        :param energy: Energy calculated with energy score
+        :param tau: to be determined from data
+        :param alpha: Hyperparameter to increase/decrease confidence
+        '''
         return torch.sigmoid(alpha * (energy - tau))
         
     
     def train(self):
+        '''
+        Train model with hyperparameters set in trainer object
+        '''
         epochs = self.model_cfg['num_epochs']
         for epoch in range(epochs):
             # Unfreeze backbone if specified

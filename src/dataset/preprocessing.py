@@ -11,6 +11,14 @@ from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
 import cv2
 
 def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[int, str]]:
+    '''
+    Prepares dataloaders based on configurations in general_cfg
+    
+    :param general_cfg: Descriptions for where to load data and how to split
+    :type general_cfg: dict[str, Any]
+    :return: Tuple of dataloaders and dict which maps categories to keys
+    :rtype: tuple[DataLoader, DataLoader, dict[int, str]]
+    '''
 
     # 1) Load labels
     labels_df = pd.read_csv(general_cfg['label_csv'])

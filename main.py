@@ -16,7 +16,17 @@ import sys
 from itertools import product
 
 
-def load_yaml_config(general_yaml_path: str, model_yaml_path: str) -> dict:
+def load_yaml_config(general_yaml_path: str, model_yaml_path: str) -> tuple[dict, dict]:
+    '''
+    Returns config dictionaries for general purpose and model configurations
+    
+    :param general_yaml_path: Description
+    :type general_yaml_path: str
+    :param model_yaml_path: Description
+    :type model_yaml_path: str
+    :return: Dictionaries of general and model configurations
+    :rtype: Tuple of dicts
+    '''
     with open(general_yaml_path, "r") as inp:
         try:
             general_cfg = yaml.safe_load(inp)
@@ -32,13 +42,17 @@ def load_yaml_config(general_yaml_path: str, model_yaml_path: str) -> dict:
     return general_cfg, model_cfg
 
 
-
 def expand_grid(grid_params: dict):
+    '''
+    Expands every possibility for grid search of parameters in grid_params dict
+    
+    :param grid_params: parameters to be present in grid search
+    :type grid_params: dict
+    '''
     keys = grid_params.keys()
     values = grid_params.values()
     for combo in product(*values):
         yield dict(zip(keys, combo))
-
 
 
 def set_seed(seed: int):
@@ -58,13 +72,13 @@ def main():
         model_yaml_path = f"./config/resnet_baseline.yaml"  # placeholder, will be overridden in grid search
     general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path=model_yaml_path)
     set_seed(general_cfg['seed'])
-    # os.makedirs(cfg.split_dir, exist_ok=True)
     train_loader, val_loader, cat_map = prepare_dataloaders(general_cfg)
     pos_weight_tensor = compute_pos_weight_tensor(train_loader, device='cuda' if torch.cuda.is_available() else 'cpu')
     
     loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')
     optimizer = model_cfg.get('optimizer', 'Adam')
 
+    # determining what method to load
     if sys.argv[1] == 'resnet':
         model = ResNetBaseline(num_classes=len(cat_map.keys()), pretrained=True, layer_size=model_cfg.get('layer_size', None))
     elif sys.argv[1] == 'vit_b_16':
@@ -79,6 +93,7 @@ def main():
     else:
         raise NotImplementedError(f"Model {sys.argv[1]} not implemented yet.")
     
+    # Initializing trainer object
     trainer = Trainer(
         model=model,
         train_loader=train_loader,

@@ -7,6 +7,7 @@ learning_rate: 0.001
 weight_decay: 0.01
 loss_fn: BCEWithLogits
 optimizer: AdamW
+smoothing_epsilon: 0
 
 # early stopper
 patience: 1

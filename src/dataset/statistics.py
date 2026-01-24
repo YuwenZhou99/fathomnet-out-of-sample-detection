@@ -1,6 +1,13 @@
 import torch
 
 def compute_pos_weight_tensor(train_loader, device="cpu"):
+    '''
+    Computes pos weight for each class to counter class imbalance in train set
+    
+    :param train_loader: trainloader for training set
+    :param device: Description
+    :return: pos_weight tensor representing class imbalances
+    '''
     # Accumulate positives per class across the whole training set
     pos = None
     n_samples = 0

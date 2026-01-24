@@ -11,6 +11,7 @@ weight_decay: 0.01
 loss_fn: BCEWithLogits
 optimizer: AdamW
 unfreeze_epoch: 2
+smoothing_epsilon: 0
 
 # early stopper
 patience: 1
