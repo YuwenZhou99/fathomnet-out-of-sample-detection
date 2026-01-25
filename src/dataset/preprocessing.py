@@ -1,14 +1,11 @@
-import json
-import os
-import random
-from dataclasses import dataclass
-from typing import Any
 import pandas as pd
-import torch
+from typing import Any
 from torch.utils.data import DataLoader
-from src.utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, load_category_key
-from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
 import cv2
+
+from src.utils import parse_categories_cell, filter_existing_images, load_category_key
+from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
+
 
 def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[int, str]]:
     '''
@@ -20,68 +17,54 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     :rtype: tuple[DataLoader, DataLoader, dict[int, str]]
     '''
 
-    # 1) Load labels
-    labels_df = pd.read_csv(general_cfg['label_csv'])
-    labels_df["labels"] = labels_df["categories"].apply(parse_categories_cell)
-    if general_cfg.get('quick_test', False):
-        labels_df = labels_df.head(general_cfg['n_samples'])
-    # 2) Filter to existing images
-    labels_df = filter_existing_images(labels_df, general_cfg['image_dir'], general_cfg['img_ext'])
-    # 3) Build uuid -> dive_id mapping from COCO train.json
-    uuid_to_dive, annotations = build_uuid_to_dive_map(general_cfg['coco_train_json'])
-
-    # adding annotations to dataframe
-    labels_df["bounding_boxes"] = [[] for _ in range(len(labels_df))]
-    for ann in annotations:
-        try:
-            labels_df.iloc[ann['image_id']-1]["bounding_boxes"].append((ann['bbox'], ann['category_id']))
-        except IndexError:
-            print(f"IndexError for image_id {ann['image_id']}")
-
-    # not sure how robust this code is, might need to be changed
-    
-    print(f"[INFO] uuid->dive_id map size: {len(uuid_to_dive)}")
-
-    train_df, val_df = dive_group_split(labels_df, uuid_to_dive,general_cfg['val_ratio'], general_cfg['seed'])
-    os.makedirs(general_cfg['split_dir'], exist_ok=True)
-    # check if train/val ids files already exist
-    if not os.path.exists(os.path.join(general_cfg['split_dir'], 'train_ids.json')) and not os.path.exists(os.path.join(general_cfg['split_dir'], 'val_ids.json')):    
-        with open(os.path.join(general_cfg['split_dir'], 'train_ids.json'), 'w') as f:
-            lst = train_df['id'].tolist()
-            json.dump(lst, f)
-        with open(os.path.join(general_cfg['split_dir'], 'val_ids.json'), 'w') as f:
-            lst = val_df['id'].tolist()
-            json.dump(lst, f)
-    print(f"[INFO] Split by dive_id: train={len(train_df)} val={len(val_df)}")
-    print(f"[INFO] Unique dives: train={train_df['dive_id'].nunique()} val={val_df['dive_id'].nunique()}")
-
-    # 5) Category space
-    # this is weird since certain categories are not in train set. This gives error when calculating loss with mismatching shapes
-    all_cat_ids = sorted({cid for labs in labels_df["labels"].tolist() for cid in labs})
-    print(f"[INFO] num_classes={len(all_cat_ids)}")
-
-    # category names
+    # 1) Load category key and define a stable class space
     cat_map = load_category_key(general_cfg['category_key_csv'])
-    # 6) DataLoaders
-    if general_cfg.get('interpolation', 'bilinear') == 'bilinear':
-        interpolation = cv2.INTER_LINEAR
-    train_tf, val_tf = build_transforms(general_cfg['image_size'], general_cfg.get('resize_size', 256), general_cfg.get('crop_size', 224),
-                                        interpolation=interpolation,
-                                        augmentations=general_cfg.get('augmentations', {}),
-                                        mean=general_cfg.get('mean', [0.485, 0.456, 0.406]),
-                                        std=general_cfg.get('std', [0.229, 0.224, 0.225]))
-    train_ds = FathomNetMultiLabelDataset(train_df, cat_map, general_cfg['image_dir'], general_cfg['img_ext'], transform=train_tf)
+    all_cat_ids = sorted(cat_map.keys())
+    print(f"[INFO] num_classes(from category_key)={len(all_cat_ids)}")
 
-    # not sure if val should have augmentations
-    val_ds = FathomNetMultiLabelDataset(val_df, cat_map, general_cfg['image_dir'], general_cfg['img_ext'], transform=val_tf)
+    # 2) Load train labels
+    train_df = pd.read_csv(general_cfg['train_label_csv'])
+    train_df["labels"] = train_df["categories"].apply(parse_categories_cell)
+    if general_cfg.get('quick_test', False):
+        train_df = train_df.head(general_cfg['n_samples'])
+    train_df = filter_existing_images(train_df, general_cfg['train_image_dir'], general_cfg['img_ext'])
 
+    # 3) Load eval labels
+    eval_df = pd.read_csv(general_cfg['eval_label_csv'])
+    eval_df["labels"] = eval_df["categories"].apply(parse_categories_cell)
+    if general_cfg.get('quick_test', False):
+        eval_df = eval_df.head(general_cfg['n_samples'])
+    eval_df = filter_existing_images(eval_df, general_cfg['eval_image_dir'], general_cfg['img_ext'])
+
+    print(f"[INFO] train={len(train_df)} eval={len(eval_df)}")
+
+    # 4) Transforms
+    interpolation = cv2.INTER_LINEAR if general_cfg.get('interpolation',
+                                                        'bilinear') == 'bilinear' else cv2.INTER_NEAREST
+    train_tf, eval_tf = build_transforms(
+        general_cfg['image_size'],
+        general_cfg.get('resize_size', 256),
+        general_cfg.get('crop_size', 224),
+        interpolation=interpolation,
+        augmentations=general_cfg.get('augmentations', {}),
+        mean=general_cfg.get('mean', [0.485, 0.456, 0.406]),
+        std=general_cfg.get('std', [0.229, 0.224, 0.225])
+    )
+
+    # 5) Datasets
+    train_ds = FathomNetMultiLabelDataset(train_df, all_cat_ids, general_cfg['train_image_dir'], general_cfg['img_ext'],
+                                          transform=train_tf)
+    eval_ds = FathomNetMultiLabelDataset(eval_df, all_cat_ids, general_cfg['eval_image_dir'], general_cfg['img_ext'],
+                                         transform=eval_tf)
+
+    # 6) Loaders
     train_loader = DataLoader(
         train_ds, batch_size=general_cfg['batch_size'], shuffle=True,
         num_workers=general_cfg['num_workers'], pin_memory=general_cfg['pin_memory']
     )
-    val_loader = DataLoader(
-        val_ds, batch_size=general_cfg['batch_size'], shuffle=False,
+    eval_loader = DataLoader(
+        eval_ds, batch_size=general_cfg['batch_size'], shuffle=False,
         num_workers=general_cfg['num_workers'], pin_memory=general_cfg['pin_memory']
     )
 
-    return train_loader, val_loader, cat_map
+    return train_loader, eval_loader, cat_map

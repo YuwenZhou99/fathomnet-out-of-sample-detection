@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-from src.utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, load_category_key
+from src.utils import parse_categories_cell, filter_existing_images, load_category_key
 from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
 from src.dataset.statistics import compute_pos_weight_tensor
 from src.network.resnet_baseline import ResNetBaseline
