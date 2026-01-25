@@ -4,7 +4,8 @@ from dataclasses import dataclass
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-from src.utils import parse_categories_cell, filter_existing_images, load_category_key
+from src.utils import parse_categories_cell, filter_existing_images, build_uuid_to_dive_map, dive_group_split, \
+    load_category_key
 from src.dataset.dataset import FathomNetMultiLabelDataset, build_transforms
 from src.dataset.statistics import compute_pos_weight_tensor
 from src.network.resnet_baseline import ResNetBaseline
@@ -72,7 +73,7 @@ def main():
         model_yaml_path = f"./config/resnet_baseline.yaml"  # placeholder, will be overridden in grid search
     general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path=model_yaml_path)
     set_seed(general_cfg['seed'])
-    train_loader, val_loader, cat_map = prepare_dataloaders(general_cfg)
+    train_loader, val_loader, test_loader, cat_map = prepare_dataloaders(general_cfg)
     pos_weight_tensor = compute_pos_weight_tensor(train_loader, device='cuda' if torch.cuda.is_available() else 'cpu')
     
     loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')

@@ -1,9 +1,11 @@
 # paths
-train_label_csv: "multilabel_classification/train.csv"
-eval_label_csv: "./src/dataset/eval_label.csv"
+label_csv: "multilabel_classification/train.csv"
+coco_train_json: "object_detection/train.json"  # contains coco_url with dive_id
+eval_label_csv: "./src.dataset/eval_label.csv"
 category_key_csv: "./src/dataset/category_key.csv"
-train_image_dir: "images/train"  # image folder
+image_dir: "images/train"  # folder with uuid.png
 eval_image_dir: "images/eval"
+split_dir: "data_splits"  # folder to save train/val splits
 
 # data
 img_ext: ".png"
