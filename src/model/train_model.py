@@ -95,6 +95,26 @@ class Trainer:
                 p.requires_grad = True
 
 
+    def unfreeze_backbone(self, epoch):
+        for p in self.model.parameters():
+            p.requires_grad = True
+
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=self.lr * 0.1,        # usually lower LR after unfreeze
+            weight_decay=self.wd,
+        )
+
+        self.scheduler = lr_scheduler.StepLR(
+            self.optimizer,
+            step_size=self.model_cfg.get("lr_step_size", 10),
+            gamma=self.model_cfg.get("lr_gamma", 0.1),
+        )
+
+        self.freeze = False
+        print(f"[INFO] Unfroze model backbone at epoch {epoch+1}.")
+
+
     @staticmethod
     def smooth_labels(targets, epsilon=0.05):
         '''
@@ -129,8 +149,29 @@ class Trainer:
         :param alpha: Hyperparameter to increase/decrease confidence
         '''
         return torch.sigmoid(alpha * (energy - tau))
-        
     
+    @staticmethod
+    def prepare_dict_for_fathom_df(image_id, targets, top_k, osd_target, osd_prob, mask_k):
+        rows = []
+        row_targets = []
+        for i in range(targets.shape[0]):
+            masked_top_k = top_k[i][mask_k[i]]
+            row = {
+                "image_id": image_id[i],
+                "categories": " ".join([str(k) for k in masked_top_k.tolist()]) + f', {str(osd_prob[i])}',
+                "osd": float(osd_prob[i])
+            }
+            row_target = {
+                "image_id": image_id[i],
+                "categories": " ".join([str(idx.item()) for idx in torch.where(targets[i] == 1)[0]]),
+                "osd": float(osd_target[i])
+            }
+            rows.append(row)
+            row_targets.append(row_target)
+
+        return rows, row_targets
+
+
     def train(self):
         '''
         Train model with hyperparameters set in trainer object
@@ -139,28 +180,10 @@ class Trainer:
         for epoch in range(epochs):
             # Unfreeze backbone if specified
             if self.freeze and self.unfreeze_epoch is not None and epoch == self.unfreeze_epoch:
-                for p in self.model.parameters():
-                    p.requires_grad = True
-
-                self.optimizer = AdamW(
-                    self.model.parameters(),
-                    lr=self.lr * 0.1,        # usually lower LR after unfreeze
-                    weight_decay=self.wd,
-                )
-
-                self.scheduler = lr_scheduler.StepLR(
-                    self.optimizer,
-                    step_size=self.model_cfg.get("lr_step_size", 10),
-                    gamma=self.model_cfg.get("lr_gamma", 0.1),
-                )
-
-                self.freeze = False
-                print(f"[INFO] Unfroze model backbone at epoch {epoch+1}.")
+                self.unfreeze_backbone(epoch)
             self.model.train()
             running_loss = 0.0
-            last_loss = 0.0
             running_val_loss = 0.0
-            last_val_loss = 0.0
 
             if not self.general_cfg['test_eval']:
                 pbar = tqdm(
@@ -170,8 +193,7 @@ class Trainer:
                 unit="batch",
                 leave=False,   # set True if you want to keep each epoch bar
                 )
-                for images, targets, _ in pbar:
-                    
+                for images, targets, _ in pbar:   
                     images = images.to(self.device)
                     targets = targets.to(self.device)
                     if self.smoothing_epsilon is not None:
@@ -207,71 +229,48 @@ class Trainer:
                 row_targets = []
 
                 with torch.no_grad():
-                    for batch_idx, (images, targets, image_id, osd_target) in enumerate(self.val_loader):
+                    for _, (images, targets, image_id, osd_target) in enumerate(self.val_loader):
+                        threshold = self.general_cfg['threshold']
+
                         images = images.to(self.device)
                         targets = targets.to(self.device)
                         logits = self.model.forward(images)
-                        print(f'target: {targets.shape}\n{targets}')
-                        print(f'logits: {logits.shape}\n{logits}')
                         probs = torch.softmax(logits, dim=1)
-                        predictions = (logits >= 0.5).to(torch.int)
-                        print(f'predictions: {predictions.shape}\n{predictions}')
+                        mask = (logits >= threshold)
+                        thresholded_predictions = probs[mask]
+                        
 
-                        # top_k might have to filtered on threshold because it now always outputs 20 predictions
-                        top_k = torch.topk(probs, self.general_cfg['top_k'])
-                        print(f'top_k: {top_k[1]}')
+                        # top_k might have to filtered on threshold because it now always outputs 20 predictions (for example just thresholding probability >=0.5)
+                        top_k_probs, top_k_classes = torch.topk(probs, self.general_cfg['top_k'])
+                        mask_k = top_k_probs >= threshold
 
                         # this has to be checked
                         energy = self.energy_score(logits)
                         tau = torch.quantile(energy, 0.95)
                         osd_prob = self.energy_to_osd(energy, tau=tau)
-
-                        print(f'top_k[1][i]: {top_k[1][0]}')
-                        '''
+                        
+                        # for future fathomscore calculation
                         for i in range(targets.shape[0]):
-                            row = {
-                                "imaged_id": image_id[i],
-                                "categories": " ".join([str(k) for k in top_k[1][i].tolist()]),
-                                "osd": float(osd_prob[i])
-                            }
-                            rows.append(row)'''
-                        
-                        for i in range(targets.shape[0]):
-                            row = {
-                                "image_id": image_id[i],
-                                "categories": " ".join([str(k) for k in top_k[1][i].tolist()]) + f', {str(osd_prob[i])}',
-                                "osd": float(osd_prob[i])
-                            }
-                            row_target = {
-                                "image_id": image_id[i],
-                                "categories": " ".join([str(idx.item()) for idx in torch.where(targets[i] == 1)[0]]),
-                                "osd": float(osd_target[i])
-                            }
-                            rows.append(row)
-                            row_targets.append(row_target)
-                            print(row_target['categories'])
+                            row, row_target = self.prepare_dict_for_fathom_df(image_id, targets, top_k_classes, osd_target, osd_prob, mask_k)
+                            rows.extend(row)
+                            row_targets.extend(row_target)
 
-                        # still need to implement this
-                        #energy_score = -torch.logsumexp(logits)
-                        #print(f'{energy_score.shape}\n{energy_score}'
-                        
-
-                        
                         val_loss = self.loss_fn(logits, targets)
                         self.batch_val_losses.append(val_loss.item())
                         running_val_loss += val_loss.item() * images.size(0)
                         all_targets.append(targets.cpu())
                         all_logits.append(logits.cpu())
 
-                predictions_df = pd.DataFrame(rows)
+                # creating dataframes from lists for fathomscore calculation
                 target_df = pd.DataFrame(row_targets)
+                predictions_df = pd.DataFrame(rows)
+
                 epoch_avg_val_loss = running_val_loss / self.n_validation_examples
                 self.val_losses.append(epoch_avg_val_loss)
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")
                 # evaluate metrics
                 all_targets = torch.cat(all_targets, dim=0).numpy()
                 probs = torch.sigmoid(torch.cat(all_logits, dim=0)).numpy()
-                all_predictions = (probs >= 0.5).astype(int)
                 pos = all_targets.sum(axis=0)
                 valid = (pos > 0) & (pos < all_targets.shape[0])
 
@@ -287,7 +286,7 @@ class Trainer:
                         'osd',
                         20
                     )
-                    print(fathomnet_score)
+                    print(f'fathom score: {fathomnet_score}')
 
                     preds = (probs >= 0.5).astype(int)
                     f1 = f1_score(all_targets[:, valid], preds[:, valid], average="weighted", zero_division=0)
