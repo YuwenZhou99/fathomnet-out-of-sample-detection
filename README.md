@@ -24,6 +24,6 @@ python main.py [resnet|vit_b_16]
 ```
 
 ## Authors
-- Yuwen Zhou
+- Yuwen Zhou (y.zhou.74@student.rug.nl)
 - Tjeerd Morsch 
 - Ebe Kort (e.kort.3@student.rug.nl)

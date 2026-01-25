@@ -24,6 +24,8 @@ n_samples: 100 # n samples
 save_model: false
 test_eval: true # set to true if you want to skip training and debug eval loop
 top_k: 20
+threshold: 0.0049 # to prevent error calculating fathomscore because after initialization probababilities dont get higher
+# and fathom score expects at least one class. (threshold should normally be 0.5)
 
 # grid search
 grid_search: true
