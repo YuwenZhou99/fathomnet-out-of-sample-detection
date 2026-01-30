@@ -73,7 +73,9 @@ def main():
         model_yaml_path = f"./config/resnet_baseline.yaml"  # placeholder, will be overridden in grid search
     general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path=model_yaml_path)
     set_seed(general_cfg['seed'])
-    train_loader, val_loader, test_loader, cat_map = prepare_dataloaders(general_cfg)
+    #train_loader, val_loader, test_loader, cat_map = prepare_dataloaders(general_cfg)
+    train_loader, val_loader, cat_map = prepare_dataloaders(general_cfg)
+
     pos_weight_tensor = compute_pos_weight_tensor(train_loader, device='cuda' if torch.cuda.is_available() else 'cpu')
     
     loss_fn = model_cfg.get('loss_fn', 'BCEWithLogits')

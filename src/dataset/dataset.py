@@ -26,6 +26,7 @@ class FathomNetMultiLabelDataset(Dataset):
         row = self.df.iloc[idx]
         uuid = row["id"]
         labels = row["labels"]
+        osd = np.random.randint(0, 2)
 
         img_path = os.path.join(self.image_dir, uuid + self.img_ext)
         img = Image.open(img_path).convert("RGB")
@@ -42,7 +43,7 @@ class FathomNetMultiLabelDataset(Dataset):
             if cid in self.id2idx:
                 y[self.id2idx[cid]] = 1.0
 
-        return img, y, uuid
+        return img, y, uuid, osd
 
 
 def build_transforms(image_size: int, resize_size: int, crop_size: int, interpolation: int,

@@ -265,6 +265,9 @@ class Trainer:
                 target_df = pd.DataFrame(row_targets)
                 predictions_df = pd.DataFrame(rows)
 
+                print(target_df)
+                print('^target_df\nbelow pred_df:\n{predictions_df}')
+
                 epoch_avg_val_loss = running_val_loss / self.n_validation_examples
                 self.val_losses.append(epoch_avg_val_loss)
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")

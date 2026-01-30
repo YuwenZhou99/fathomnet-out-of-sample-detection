@@ -58,7 +58,8 @@ def build_uuid_to_dive_map(coco_json_path: str) -> Dict[str, str]:
         dive = _extract_dive_id_from_coco_url(url)
         if uuid and dive:
             m[uuid] = str(dive)
-    return m
+        annotations = coco.get("annotations", [])
+    return m, annotations
 
 
 def dive_group_split(
