@@ -3,9 +3,10 @@ label_csv: "multilabel_classification/train.csv"
 coco_train_json: "object_detection/train.json"  # contains coco_url with dive_id
 eval_label_csv: "./src/dataset/eval_label.csv"
 category_key_csv: "./src/dataset/category_key.csv"
-image_dir: "images/train"  # folder with uuid.png
+image_dir: "images"  # folder with uuid.png
 eval_image_dir: "images/eval"
 split_dir: "data_splits"  # folder to save train/val splits
+save_dir_pos_weight: "src/dataset/pos_weights"
 
 # data
 img_ext: ".png"
@@ -14,24 +15,24 @@ val_ratio: 0.2
 seed: 42
 
 # dataloader
-batch_size: 32
+batch_size: 128
 num_workers: 4
 pin_memory: false # set true when using GPU
 
 # training
-quick_test: true # if true, use only first n samples
-n_samples: 100 # n samples
-save_model: false
-test_eval: true # set to true if you want to skip training and debug eval loop
+quick_test: false # if true, use only first n samples
+n_samples: 500 # n samples
+save_model: true
+test_eval: false # set to true if you want to skip training and debug eval loop
 top_k: 20
-threshold: 0.0049 # to prevent error calculating fathomscore because after initialization probababilities dont get higher
+threshold: 0.5 # to prevent error calculating fathomscore because after initialization probababilities dont get higher
 # and fathom score expects at least one class. (threshold should normally be 0.5)
 
 # grid search
 grid_search: true
 grid_params:
-  learning_rate: [0.001, 0.0001, 0.00001]
-  batch_size: [32, 64]
+  learning_rate: [0.001, 0.0001]
+  batch_size: [32]
   freeze: [true, false]
   smoothing_epsilon: [0.0, 0.05]
   optimizer: [AdamW]
@@ -40,6 +41,6 @@ grid_params:
   num_epochs: [50]
   unfreeze_epoch: [20]
   pos_weight: [2.0]
-  early_stopping_patience: [3]
-  early_stopping_min_delta: [0.01]
+  early_stopping_patience: [5]
+  early_stopping_min_delta: [0.001]
   layer_size: [256, 512]

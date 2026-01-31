@@ -10,10 +10,10 @@ from albumentations.pytorch import ToTensorV2
 
 
 class FathomNetMultiLabelDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, cat_map: Dict[int, Dict[str, str]],
-                 image_dir: str, img_ext: str, transform=None):
+    def __init__(self, df, cat_map,
+                 image_dir, img_ext, transform=None):
         self.df = df.reset_index(drop=True)
-        self.cat_ids: List[int] = sorted(list(cat_map.keys()))
+        self.cat_ids = cat_map
         self.id2idx = {cid: i for i, cid in enumerate(self.cat_ids)}
         self.image_dir = image_dir
         self.img_ext = img_ext
@@ -26,8 +26,6 @@ class FathomNetMultiLabelDataset(Dataset):
         row = self.df.iloc[idx]
         uuid = row["id"]
         labels = row["labels"]
-        osd = np.random.randint(0, 2)
-
         img_path = os.path.join(self.image_dir, uuid + self.img_ext)
         img = Image.open(img_path).convert("RGB")
 
@@ -40,20 +38,19 @@ class FathomNetMultiLabelDataset(Dataset):
 
         y = torch.zeros((len(self.cat_ids),), dtype=torch.float32)
         for cid in labels:
-            if cid in self.id2idx:
-                y[self.id2idx[cid]] = 1.0
+            y[cid] = 1.0
 
-        return img, y, uuid, osd
+        return img, y
 
 
 def build_transforms(image_size: int, resize_size: int, crop_size: int, interpolation: int,
                      augmentations: dict[str, Any],
                      mean: List[float], std: List[float]):
     train_tf = A.Compose([
-        A.RandomResizedCrop(size=(image_size, image_size), scale=(0.85, 1.0), p=1.0, interpolation=interpolation),
+        A.Resize(height=image_size, width=image_size, interpolation=interpolation),
         A.HorizontalFlip(p=augmentations.get('horizontal_flip', 0.5)),
-        A.Rotate(limit=augmentations.get('rotation_limit', 10), p=augmentations.get('rotation_prob', 0.3)),
-        A.RandomBrightnessContrast(p=augmentations.get('brightness_contrast', 0.5)),
+        A.Rotate(limit=augmentations.get('rotation_limit', 10), p=augmentations.get('rotation_prob', 0.3), border_mode=0),
+        A.RandomBrightnessContrast(p=augmentations.get('brightness_contrast', 0.3)),
         A.HueSaturationValue(p=augmentations.get('hue_saturation', 0.2)),
         A.GaussNoise(
             std_range=(
@@ -65,10 +62,16 @@ def build_transforms(image_size: int, resize_size: int, crop_size: int, interpol
         ToTensorV2(),
     ])
 
+    debug_tf = A.Compose([
+        A.Resize(height=image_size, width=image_size, interpolation=interpolation),
+        A.Normalize(mean=mean, std=std),
+        ToTensorV2(),
+    ])
+
     val_tf = A.Compose([
         A.Resize(height=image_size, width=image_size, interpolation=interpolation),
         A.Normalize(mean=mean, std=std),
         ToTensorV2(),
     ])
 
-    return train_tf, val_tf
+    return debug_tf, val_tf
