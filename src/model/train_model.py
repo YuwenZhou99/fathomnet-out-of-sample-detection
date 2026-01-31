@@ -1,19 +1,19 @@
-from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
-from torch.optim import Adam, AdamW, lr_scheduler
+from torch.nn import BCEWithLogitsLoss
+from torch.optim import Adam, AdamW
 import matplotlib.pyplot as plt
 import os
 import torch
 from tqdm.auto import tqdm
 from src.model.earlystopper import EarlyStopper
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, auc
+from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 
 import logging
 import pandas as pd
-from evaluation.fathomnet_metric import score
 import numpy as np
 import torch.nn as nn
+
 
 logging.basicConfig(
     filename="warnings.log",
@@ -37,8 +37,8 @@ def get_next_filename(base_path, ext="png"):
         i += 1
 
 
-# MAP@K (multi-label) calculate
-def map_at_k_multi_label(y_true_sets, y_pred_lists, k=20):
+def map_at_k_multi_label(y_true_sets, y_pred_lists, k=20) -> float:
+    """Mean Average Precision @ K for multi-label (ranking) predictions."""
     aps = []
     for true_set, pred in zip(y_true_sets, y_pred_lists):
         pred_k = pred[:k]
@@ -68,8 +68,10 @@ class Trainer:
         self.lr = model_cfg.get('learning_rate', 0.001)
         self.wd = model_cfg.get('weight_decay', 0.0)
         self.freeze = model_cfg.get('freeze', False)
+
         if self.freeze:
             self.freeze_backbone()
+
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = AdamW(trainable_params, lr=self.lr) if optimizer == 'AdamW' else Adam(
             trainable_params, lr=self.lr, weight_decay=self.wd
@@ -83,21 +85,26 @@ class Trainer:
             threshold=1e-4,
             min_lr=1e-7
         )
+
         self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else None
         self.smoothing_epsilon = general_cfg.get('smooting_epsilon', 0)
         self.device = device
         self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
+
         self.batch_size = model_cfg.get('batch_size', 32)
         self.train_losses = []
         self.val_losses = []
         self.batch_train_losses = []
         self.batch_val_losses = []
+
         self.n_training_examples = len(train_loader.dataset)
         self.n_validation_examples = len(val_loader.dataset) if val_loader is not None else 0
+
         self.early_stopper = EarlyStopper(
             patience=model_cfg.get('patience', 1),
             min_delta=model_cfg.get('min_delta', 0.0)
         )
+
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
         self.n_classes = n_classes
@@ -165,29 +172,22 @@ class Trainer:
         return targets * (1 - epsilon) + 0.5 * epsilon
 
     @staticmethod
-    def energy_score(logits, T=1.0):
-        return -torch.logsumexp(logits / T, dim=1)
-
-    @staticmethod
-    def energy_to_osd(energy, tau, alpha=1.0):
-        return torch.sigmoid(alpha * (energy - tau))
-
-    @staticmethod
     def sigmoid_entropy(logits: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+        """Average Bernoulli entropy across classes for multi-label logits."""
         p = torch.sigmoid(logits)
         ent = -(p * (p.clamp_min(eps).log()) + (1 - p) * ((1 - p).clamp_min(eps).log()))
         return ent.mean(dim=1)
 
     def calibrate_entropy_tau(self) -> float:
+        """Calibrate entropy threshold tau on validation set (in-distribution)."""
         if self.val_loader is None:
             raise RuntimeError("val_loader is None; cannot calibrate entropy tau.")
 
         self.model.eval()
         ent_list = []
-
         with torch.no_grad():
-            for images, targets in tqdm(self.val_loader, desc="Calibrating entropy tau", unit="batch"):
-                images = images.to(self.device)
+            for batch in tqdm(self.val_loader, desc="Calibrating entropy tau", unit="batch"):
+                images = batch[0].to(self.device)
                 logits = self.model(images)
                 ent = self.sigmoid_entropy(logits).detach().cpu()
                 ent_list.append(ent)
@@ -198,7 +198,99 @@ class Trainer:
         print(f"[INFO] Calibrated entropy tau={tau:.6f} (quantile={self.entropy_quantile}, alpha={self.entropy_alpha})")
         return tau
 
-    # eval test
+    @staticmethod
+    def _is_id_container(x, B: int) -> bool:
+        """Heuristic: list/tuple of length B with str/int elements."""
+        return isinstance(x, (list, tuple)) and len(x) == B and (len(x) == 0 or isinstance(x[0], (str, int)))
+
+    @staticmethod
+    def _tensor_unique_small_ints(x: torch.Tensor, max_classes: int = 3) -> bool:
+        """Check if tensor has few unique values (e.g., {0,1})."""
+        try:
+            u = torch.unique(x.detach().cpu())
+            return len(u) <= max_classes
+        except Exception:
+            return False
+
+    def _parse_batch(self, batch, require_gt: bool):
+        """
+        Robustly parse a batch into:
+          images: Tensor(B, ...)
+          image_id: list[str|int] or None
+          targets: Tensor(B,C) or None
+          osd_target: Tensor(B,) or None (values 0/1)
+        """
+        if not isinstance(batch, (list, tuple)) or len(batch) < 2:
+            raise ValueError(f"Unexpected batch type/len: type={type(batch)} len={len(batch) if hasattr(batch,'__len__') else 'NA'}")
+
+        images = batch[0]
+        if not torch.is_tensor(images):
+            raise ValueError("batch[0] must be images tensor")
+        B = images.size(0)
+
+        image_id = None
+        targets = None
+        osd_target = None
+
+        # 1) Find image_id: prefer list/tuple of str/int
+        for j in range(1, len(batch)):
+            if self._is_id_container(batch[j], B):
+                image_id = list(batch[j])
+                break
+        # Tensor IDs (rare): shape (B,) int-like
+        if image_id is None:
+            for j in range(1, len(batch)):
+                bj = batch[j]
+                if torch.is_tensor(bj) and bj.ndim == 1 and bj.numel() == B:
+                    # Could be ids or could be osd_target; disambiguate later
+                    # If dtype is integer, treat as candidate id for now
+                    if bj.dtype in (torch.int32, torch.int64):
+                        image_id = bj.detach().cpu().tolist()
+                        break
+
+        # 2) Find targets: Tensor(B,C) with C>=2
+        for j in range(1, len(batch)):
+            bj = batch[j]
+            if torch.is_tensor(bj) and bj.ndim == 2 and bj.size(0) == B:
+                targets = bj
+                break
+
+        # 3) Find osd_target: Tensor(B,) or (B,1) with {0,1} values
+        for j in range(1, len(batch)):
+            bj = batch[j]
+            if torch.is_tensor(bj) and bj.numel() == B and bj.ndim in (1, 2):
+                cand = bj.view(-1)
+                # Prefer tensors that look binary {0,1}
+                if self._tensor_unique_small_ints(cand, max_classes=2):
+                    # Also avoid picking integer image_id tensor as osd_target if already used as id
+                    if image_id is not None and torch.is_tensor(batch[j]) and batch[j].dtype in (torch.int32, torch.int64):
+                        # If image_id already came from this tensor, skip as osd_target
+                        pass
+                    osd_target = cand
+                    break
+
+        # Fallback: if image_id is still None, try last element (common pattern)
+        if image_id is None:
+            last = batch[-1]
+            if self._is_id_container(last, B):
+                image_id = list(last)
+            elif torch.is_tensor(last) and last.ndim == 1 and last.numel() == B:
+                image_id = last.detach().cpu().tolist()
+
+        if require_gt:
+            if targets is None:
+                raise RuntimeError(
+                    "GT category targets not found in batch, cannot compute MAP@20. "
+                    "Please ensure test_loader returns targets Tensor(B,C)."
+                )
+            if osd_target is None:
+                raise RuntimeError(
+                    "OSD ground-truth (0/1) not found in batch, cannot compute AUC-ROC. "
+                    "Please ensure test_loader returns osd_target Tensor(B,) or Tensor(B,1)."
+                )
+
+        return images, image_id, targets, osd_target
+
     def evaluate_test(
         self,
         test_loader,
@@ -208,11 +300,11 @@ class Trainer:
         k: int = 20,
     ):
         """
-        Produces:
-          - pred_df: image_id, categories, osd
-          - results: optional metrics if GT exists locally (AUCROC, MAP@20)
+        Outputs:
+          pred_df columns: image_id, categories, osd, (optional) osd_target
+          results: {'osd_aucroc':..., 'map@20':...} when GT is available
         categories format:
-          "c1 c2 ... c20, osd_prob"
+          "c1 c2 ... cK, osd_prob"
         """
         if self.entropy_tau is None:
             if self.val_loader is None:
@@ -222,78 +314,75 @@ class Trainer:
         self.model.eval()
         rows = []
 
-        # optional GT metrics buffers
         osd_scores, osd_targets = [], []
         y_true_sets, y_pred_lists = [], []
 
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test eval", unit="batch"):
-                images = batch[0].to(self.device)
-
-                # get image_id
-                # try find list/tuple of ids
-                image_id = None
-                for j in range(1, len(batch)):
-                    bj = batch[j]
-                    if isinstance(bj, (list, tuple)) and len(bj) == images.size(0) and isinstance(bj[0], (str, int)):
-                        image_id = bj
-                        break
-                if image_id is None:
-                    image_id = batch[-1]
-                if torch.is_tensor(image_id):
-                    image_id = image_id.detach().cpu().tolist()
-
-                # optional GT for local evaluation
-                targets = None
-                osd_target = None
-                if compute_metrics_if_gt:
-                    for j in range(1, len(batch)):
-                        bj = batch[j]
-                        if torch.is_tensor(bj) and bj.ndim == 2 and bj.size(0) == images.size(0):
-                            targets = bj
-                            break
-                    for j in range(1, len(batch)):
-                        bj = batch[j]
-                        if torch.is_tensor(bj) and bj.size(0) == images.size(0) and bj.ndim in (1, 2) and bj.numel() == images.size(0):
-                            osd_target = bj.view(-1)
-                            break
+                images, image_id, targets, osd_target = self._parse_batch(batch, require_gt=compute_metrics_if_gt)
+                images = images.to(self.device)
 
                 logits = self.model(images)
                 probs = torch.sigmoid(logits)
 
-                # MAP@20 need ranking
-                topk_probs, topk_idx = torch.topk(probs, k, dim=1)  # (B,k)
+                # Top-k ranking for MAP@20
+                _, topk_idx = torch.topk(probs, k, dim=1)  # (B,k)
 
-                # OSD
+                # Entropy-based OSD score
                 ent = self.sigmoid_entropy(logits)  # (B,)
                 tau = float(self.entropy_tau)
                 osd_prob = torch.sigmoid(self.entropy_alpha * (ent - tau))  # (B,)
 
                 B = probs.size(0)
                 for i in range(B):
+                    # Predicted class IDs
                     pred_ids = topk_idx[i].detach().cpu().tolist()
+
+                    # Map predictions to original IDs if provided
                     if new2orig is not None:
-                        pred_ids = [int(new2orig[int(x)]) for x in pred_ids]
+                        pred_ids_mapped = []
+                        for x in pred_ids:
+                            x = int(x)
+                            pred_ids_mapped.append(int(new2orig[x]) if x in new2orig else x)
+                        pred_ids = pred_ids_mapped
 
                     osd_i = osd_prob[i].detach().cpu().item()
 
+                    # Safe image_id fallback
+                    img_id_i = image_id[i] if image_id is not None else f"idx_{len(rows)}"
+
                     cats_str = " ".join(str(x) for x in pred_ids)
-                    rows.append({
-                        "image_id": image_id[i],
+                    row = {
+                        "image_id": img_id_i,
                         "categories": cats_str + f", {osd_i}",
-                        "osd": osd_i,
-                    })
+                        "osd": float(osd_i),
+                    }
 
-                    if compute_metrics_if_gt and (targets is not None):
+                    # If GT exists, attach it and accumulate metrics buffers
+                    if compute_metrics_if_gt:
+                        # MAP@20 GT categories
                         gt_idx = torch.where(targets[i].detach().cpu() == 1)[0].tolist()
-                        if new2orig is not None:
-                            t_idx = [int(new2orig[int(x)]) if int(x) in new2orig else int(x) for x in gt_idx]
-                        y_true_sets.append(set(gt_idx))
-                        y_pred_lists.append(pred_ids)
 
-                    if compute_metrics_if_gt and (osd_target is not None):
-                        osd_targets.append(float(osd_target[i].detach().cpu().item()))
+                        # Decide whether GT indices are new-index space or already original ID space:
+                        # If targets width matches mapping size, GT likely uses new-indices.
+                        gt_is_new_space = (new2orig is not None) and (targets.size(1) == len(new2orig))
+                        if gt_is_new_space and new2orig is not None:
+                            gt_idx_mapped = []
+                            for x in gt_idx:
+                                x = int(x)
+                                gt_idx_mapped.append(int(new2orig[x]) if x in new2orig else x)
+                            gt_idx = gt_idx_mapped
+
+                        y_true_sets.append(set(int(x) for x in gt_idx))
+                        y_pred_lists.append([int(x) for x in pred_ids])
+
+                        # AUC-ROC GT OSD
+                        osd_t = float(osd_target[i].detach().cpu().item())
+                        osd_targets.append(osd_t)
                         osd_scores.append(float(osd_i))
+                        row["osd_target"] = osd_t
+
+                    rows.append(row)
 
         pred_df = pd.DataFrame(rows)
 
@@ -303,22 +392,27 @@ class Trainer:
             print(f"[INFO] Saved test predictions -> {save_csv_path}")
 
         results = {}
-        if compute_metrics_if_gt and len(osd_targets) > 0 and len(set(osd_targets)) > 1:
+        if compute_metrics_if_gt:
+            if len(osd_targets) == 0:
+                raise RuntimeError("No osd_targets collected; cannot compute AUC-ROC.")
+            if len(set(osd_targets)) <= 1:
+                raise RuntimeError(f"AUC-ROC undefined: osd_targets has only one class: {set(osd_targets)}")
             results["osd_aucroc"] = roc_auc_score(osd_targets, osd_scores)
-        if compute_metrics_if_gt and len(y_true_sets) > 0:
-            results["map@20"] = map_at_k_multi_label(y_true_sets, y_pred_lists, k=20)
 
-        if results:
+            if len(y_true_sets) == 0:
+                raise RuntimeError("No GT category labels collected; cannot compute MAP@20.")
+            results["map@20"] = map_at_k_multi_label(y_true_sets, y_pred_lists, k=k)
+
             print("[TEST METRICS]", results)
 
         return pred_df, results
-
 
     @staticmethod
     def count_pos_simple(loader, num_classes):
         pos = torch.zeros(num_classes)
         n = 0
-        for images, targets in loader:
+        for batch in loader:
+            images, targets = batch[0], batch[1]
             targets = targets.float()
             pos += targets.sum(dim=0).cpu()
             n += targets.size(0)
@@ -343,7 +437,8 @@ class Trainer:
                     unit="batch",
                     leave=False,
                 )
-                for images, targets in pbar:
+                for batch in pbar:
+                    images, targets = batch[0], batch[1]
                     images = images.to(self.device)
                     targets = targets.to(self.device)
                     if self.smoothing_epsilon is not None:
@@ -372,15 +467,14 @@ class Trainer:
                 all_logits = []
 
                 with torch.no_grad():
-                    for _, (images, targets) in enumerate(self.val_loader):
+                    for batch in self.val_loader:
+                        images, targets = batch[0], batch[1]
                         images = images.to(self.device)
                         targets = targets.to(self.device)
                         logits = self.model.forward(images)
                         probs = torch.sigmoid(logits)
 
-                        top_k_probs, top_k_classes = torch.topk(probs, self.general_cfg['top_k'])
-                        mask_k = top_k_probs >= threshold
-
+                        _top_k_probs, _top_k_classes = torch.topk(probs, self.general_cfg['top_k'])
                         val_loss = self.loss_fn(logits, targets)
                         self.batch_val_losses.append(val_loss.item())
                         running_val_loss += val_loss.item() * images.size(0)
@@ -415,15 +509,6 @@ class Trainer:
                     print(f"ROC AUC micro: {roc_auc_micro:.4f}, ROC AUC macro: {roc_auc_macro:.4f}, PR AUC: {avg_precision:.4f}, F1_micro: {f1_micro:.4f}, F1_macro: {f1_macro:.4f}")
                     print("true_pos_rate:", true_pos_rate, "pred_pos_rate:", pred_pos_rate)
 
-                    thresholds = np.linspace(0.002, 0.30, 20)
-                    best = (0, 0.5)
-                    for t in thresholds:
-                        preds = (probs >= t).astype(int)
-                        f1 = f1_score(all_targets[:, valid], preds[:, valid], average="micro", zero_division=0)
-                        if f1 > best[0]:
-                            best = (f1, t)
-                    print("best micro-F1:", best[0], "at threshold:", best[1])
-
                 if self.early_stopper.early_stop(epoch_avg_val_loss):
                     print(f"Early stopping triggered at epoch {epoch+1}")
                     break
@@ -445,4 +530,3 @@ class Trainer:
         plt.savefig(filename, dpi=300, bbox_inches="tight")
         plt.show()
         plt.close()
-
