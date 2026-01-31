@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List
+from typing import Any, List
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -10,14 +10,23 @@ from albumentations.pytorch import ToTensorV2
 
 
 class FathomNetMultiLabelDataset(Dataset):
-    def __init__(self, df, cat_map,
-                 image_dir, img_ext, transform=None):
+    """
+    Returns:
+      - (img, y, uuid) if no osd_target column exists
+      - (img, y, uuid, osd_target) if osd_target exists
+    Assumption:
+      - df["labels"] is a list of compact class indices in [0, num_classes-1]
+    """
+    def __init__(self, df: pd.DataFrame, num_classes: int,
+                 image_dir: str, img_ext: str, transform=None,
+                 osd_col: str = "osd_target"):
         self.df = df.reset_index(drop=True)
-        self.cat_ids = cat_map
-        self.id2idx = {cid: i for i, cid in enumerate(self.cat_ids)}
+        self.num_classes = int(num_classes)
         self.image_dir = image_dir
         self.img_ext = img_ext
         self.transform = transform
+        self.osd_col = osd_col
+        self.has_osd = (osd_col in self.df.columns)
 
     def __len__(self):
         return len(self.df)
@@ -25,7 +34,8 @@ class FathomNetMultiLabelDataset(Dataset):
     def __getitem__(self, idx: int):
         row = self.df.iloc[idx]
         uuid = row["id"]
-        labels = row["labels"]
+        labels = row["labels"]  # list[int] in compact index space
+
         img_path = os.path.join(self.image_dir, uuid + self.img_ext)
         img = Image.open(img_path).convert("RGB")
 
@@ -36,11 +46,18 @@ class FathomNetMultiLabelDataset(Dataset):
             else:
                 img = self.transform(img)
 
-        y = torch.zeros((len(self.cat_ids),), dtype=torch.float32)
+        y = torch.zeros((self.num_classes,), dtype=torch.float32)
         for cid in labels:
-            y[cid] = 1.0
+            cid = int(cid)
+            if 0 <= cid < self.num_classes:
+                y[cid] = 1.0
 
-        return img, y
+        if self.has_osd:
+            osd_target = float(row[self.osd_col])
+            osd_target = torch.tensor(osd_target, dtype=torch.float32)
+            return img, y, uuid, osd_target
+
+        return img, y, uuid
 
 
 def build_transforms(image_size: int, resize_size: int, crop_size: int, interpolation: int,
