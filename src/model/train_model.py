@@ -287,7 +287,7 @@ class Trainer:
                     if compute_metrics_if_gt and (targets is not None):
                         gt_idx = torch.where(targets[i].detach().cpu() == 1)[0].tolist()
                         if new2orig is not None:
-                            gt_idx = [int(new2orig[int(x)]) for x in gt_idx]
+                            t_idx = [int(new2orig[int(x)]) if int(x) in new2orig else int(x) for x in gt_idx]
                         y_true_sets.append(set(gt_idx))
                         y_pred_lists.append(pred_ids)
 
@@ -445,3 +445,4 @@ class Trainer:
         plt.savefig(filename, dpi=300, bbox_inches="tight")
         plt.show()
         plt.close()
+
