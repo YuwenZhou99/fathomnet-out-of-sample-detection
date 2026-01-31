@@ -131,8 +131,8 @@ def main():
         model_yaml_path = f"./config/resnet_baseline.yaml"  # placeholder, will be overridden in grid search
     general_cfg, model_cfg = load_yaml_config("./config/general.yaml", model_yaml_path=model_yaml_path)
     set_seed(general_cfg['seed'])
-    #train_loader, val_loader, test_loader, cat_map = prepare_dataloaders(general_cfg)
-    train_loader, val_loader, cat_map, n_existing, new2orig = prepare_dataloaders(general_cfg)
+    train_loader, val_loader, test_loader, cat_map, n_existing, new2orig = prepare_dataloaders(general_cfg)
+    # train_loader, val_loader, cat_map, n_existing, new2orig = prepare_dataloaders(general_cfg)
 
     save_dir = general_cfg.get('save_dir_pos_weight', 'src/dataset/pos_weights')
     os.makedirs(save_dir, exist_ok=True)
@@ -201,6 +201,13 @@ def main():
     #overfit_one_batch(model, train_loader, 'cuda', pos_weight_tensor, 1e-3, 300, val_loader=val_loader)
     trainer.train()
     trainer.plot_losses()
+
+    # Calibrate entropy tau on validation once (for test OSD)
+    trainer.calibrate_entropy_tau()
+
+    # Run test eval with entropy-based OSD and save submission-like csv
+    pred_df = trainer.evaluate_test(test_loader, save_csv_path="evaluation/preds/test_entropy.csv")
+    print(pred_df.head())
 
 if __name__ == "__main__":
     main()
