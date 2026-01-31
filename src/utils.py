@@ -3,8 +3,9 @@ import ast
 import json
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
+import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
-
+from collections import defaultdict
 
 def parse_categories_cell(x: str) -> List[int]:
     vals = ast.literal_eval(x)  # e.g. [1.0, 9.0, 11.0]
@@ -87,5 +88,61 @@ def dive_group_split(
     inter = set(train_df["dive_id"]) & set(val_df["dive_id"])
     if inter:
         raise RuntimeError(f"Dive leakage detected! Overlapping dive_ids: {list(inter)[:10]}")
+
+    return train_df, val_df
+
+
+def random_split(
+    df: pd.DataFrame,
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Random split into train/val while ensuring every class appears at least once in train.
+    Assumes df["labels"] is a list of class ids (multi-label).
+    """
+
+    rng = np.random.default_rng(seed)
+    df = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+
+    # Collect all classes
+    all_classes = set(c for labels in df["labels"] for c in labels)
+
+    # Map class -> indices where it appears
+    class_to_indices = defaultdict(list)
+    for idx, labels in enumerate(df["labels"]):
+        for c in labels:
+            class_to_indices[c].append(idx)
+
+    train_indices = set()
+
+    # Step 1: ensure each class has at least one sample in train
+    for c in all_classes:
+        idx = rng.choice(class_to_indices[c])
+        train_indices.add(idx)
+
+    # Step 2: fill the rest randomly to reach desired train size
+    n_total = len(df)
+    n_train_target = int((1.0 - val_ratio) * n_total)
+
+    remaining_indices = [i for i in range(n_total) if i not in train_indices]
+    rng.shuffle(remaining_indices)
+
+    for i in remaining_indices:
+        if len(train_indices) >= n_train_target:
+            break
+        train_indices.add(i)
+
+    train_indices = sorted(train_indices)
+    val_indices = [i for i in range(n_total) if i not in train_indices]
+
+    train_df = df.iloc[train_indices].reset_index(drop=True)
+    val_df = df.iloc[val_indices].reset_index(drop=True)
+
+    # Sanity check
+    train_classes = set(c for labels in train_df["labels"] for c in labels)
+    missing = all_classes - train_classes
+    if missing:
+        raise RuntimeError(f"Classes missing from train split: {missing}")
 
     return train_df, val_df
