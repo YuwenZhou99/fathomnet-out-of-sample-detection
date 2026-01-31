@@ -81,6 +81,10 @@ class Trainer:
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
         self.n_classes = n_classes
+        # Entropy OSD calibration params (for test eval)
+        self.entropy_tau = None
+        self.entropy_quantile = general_cfg.get("entropy_quantile", 0.95)
+        self.entropy_alpha = general_cfg.get("entropy_alpha", 1.0)
 
         # Model check
         print(f'[INFO] Model architecture: {type(self.model)}')
@@ -188,6 +192,99 @@ class Trainer:
         return torch.sigmoid(alpha * (energy - tau))
     
     @staticmethod
+    def sigmoid_entropy(logits: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+        """
+        Multi-label Bernoulli entropy averaged over classes.
+        logits: (B, C)
+        returns: (B,)
+        """
+        p = torch.sigmoid(logits)
+        ent = -(p * (p.clamp_min(eps).log()) + (1 - p) * ((1 - p).clamp_min(eps).log()))
+        return ent.mean(dim=1)
+
+    def calibrate_entropy_tau(self) -> float:
+        """
+        Calibrate entropy threshold tau on validation set once.
+        Uses a quantile of validation entropies (default 0.95).
+        """
+        if self.val_loader is None:
+            raise RuntimeError("val_loader is None; cannot calibrate entropy tau.")
+
+        self.model.eval()
+        ent_list = []
+
+        with torch.no_grad():
+            for images, targets in tqdm(self.val_loader, desc="Calibrating entropy tau", unit="batch"):
+                images = images.to(self.device)
+                logits = self.model(images)
+                ent = self.sigmoid_entropy(logits).detach().cpu()
+                ent_list.append(ent)
+
+        ent_all = torch.cat(ent_list, dim=0)
+        tau = float(torch.quantile(ent_all, self.entropy_quantile))
+        self.entropy_tau = tau
+        print(f"[INFO] Calibrated entropy tau={tau:.6f} (quantile={self.entropy_quantile}, alpha={self.entropy_alpha})")
+        return tau
+
+    def evaluate_test(self, test_loader, save_csv_path: str | None = None) -> pd.DataFrame:
+        """
+        Test eval loop that computes entropy-based OSD score.
+        Expects each test batch as either:
+          (images, image_id)  OR  (images, image_id, *extras)
+
+        Outputs a DataFrame compatible with fathomnet_metric.score format:
+          image_id, categories, osd
+        where categories is: "k1 k2 k3 ..., osd_prob"
+        """
+        # Ensure tau is calibrated on val (NOT on test)
+        if self.entropy_tau is None:
+            if self.val_loader is None:
+                raise RuntimeError("entropy_tau is None and val_loader is None. Provide val_loader or set entropy_tau.")
+            self.calibrate_entropy_tau()
+
+        self.model.eval()
+        rows = []
+
+        threshold = float(self.general_cfg["threshold"])
+        top_k = int(self.general_cfg["top_k"])
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Test eval (entropy)", unit="batch"):
+                images = batch[0].to(self.device)
+                image_id = batch[1]  # list/tuple of ids
+
+                logits = self.model(images)
+
+                # multi-label probs for top-k
+                probs = torch.sigmoid(logits)
+                top_k_probs, top_k_classes = torch.topk(probs, top_k, dim=1)
+                mask_k = top_k_probs >= threshold
+
+                # entropy-based OSD
+                ent = self.sigmoid_entropy(logits)  # (B,)
+                tau = float(self.entropy_tau)
+                osd_prob = torch.sigmoid(self.entropy_alpha * (ent - tau))  # (B,)
+
+                # build rows
+                for i in range(len(image_id)):
+                    masked = top_k_classes[i][mask_k[i]]
+                    cats = " ".join(str(k.item()) for k in masked)
+                    rows.append({
+                        "image_id": image_id[i],
+                        "categories": cats + f", {float(osd_prob[i])}",
+                        "osd": float(osd_prob[i]),
+                    })
+
+        pred_df = pd.DataFrame(rows)
+
+        if save_csv_path is not None:
+            os.makedirs(os.path.dirname(save_csv_path), exist_ok=True)
+            pred_df.to_csv(save_csv_path, index=False)
+            print(f"[INFO] Saved test predictions -> {save_csv_path}")
+
+        return pred_df
+    
+    @staticmethod
     def prepare_dict_for_fathom_df(image_id, targets, top_k, osd_target, osd_prob, mask_k):
         rows = []
         row_targets = []
@@ -270,7 +367,9 @@ class Trainer:
             print(f"Epoch {epoch+1} - Training loss: {epoch_avg_loss}")
 
             if self.save_model:
-                torch.save(self.model.state_dict(), os.path.join(self.save_dir, f"{self.model_cfg['model_name']}_{epoch+1}.pth"))
+                os.makedirs(self.save_dir, exist_ok=True)
+                ckpt_path = os.path.join(self.save_dir, f"{self.model_cfg['model_name']}_{epoch + 1}.pth")
+                torch.save(self.model.state_dict(), ckpt_path)
 
             # Validation loop can be added here
             if self.val_loader is not None:
