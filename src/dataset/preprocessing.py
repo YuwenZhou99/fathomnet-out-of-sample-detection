@@ -150,8 +150,8 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
     val_ds = FathomNetMultiLabelDataset(val_df, new2orig, general_cfg['image_dir'], general_cfg['img_ext'],
                                         transform=val_tf)
 
-    #test_ds = FathomNetMultiLabelDataset(test_df, cat_map, general_cfg['eval_image_dir'], general_cfg['img_ext'],
-    #                                     transform=test_tf)
+    test_ds = FathomNetMultiLabelDataset(test_df, cat_map, general_cfg['eval_image_dir'], general_cfg['img_ext'],
+                                        transform=val_tf)
 
     train_loader = DataLoader(
         train_ds, batch_size=general_cfg['batch_size'], shuffle=False,
@@ -161,9 +161,9 @@ def prepare_dataloaders(general_cfg: dict[str, Any]) -> tuple[DataLoader, DataLo
         val_ds, batch_size=general_cfg['batch_size'], shuffle=False,
         num_workers=general_cfg['num_workers'], pin_memory=general_cfg['pin_memory']
     )
-    #test_loader = DataLoader(
-    #    test_ds, batch_size=general_cfg['batch_size'], shuffle=False,
-    #    num_workers=general_cfg['num_workers'], pin_memory=general_cfg['pin_memory']
-    #)
+    test_loader = DataLoader(
+       test_ds, batch_size=general_cfg['batch_size'], shuffle=False,
+       num_workers=general_cfg['num_workers'], pin_memory=general_cfg['pin_memory']
+    )
 
-    return train_loader, val_loader, cat_map, n_existing, new2orig
+    return train_loader, val_loader, test_loader, cat_map, n_existing, new2orig
