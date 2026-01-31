@@ -9,9 +9,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, au
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 
-import warnings
 import logging
-from sklearn.exceptions import UndefinedMetricWarning
 import pandas as pd
 from evaluation.fathomnet_metric import score
 import numpy as np
@@ -29,6 +27,7 @@ def log_warning(message, category, filename, lineno, file=None, line=None):
 warnings.showwarning = log_warning
 warnings.filterwarnings("default", category=UndefinedMetricWarning)
 
+
 def get_next_filename(base_path, ext="png"):
     i = 0
     while True:
@@ -38,8 +37,29 @@ def get_next_filename(base_path, ext="png"):
         i += 1
 
 
+# MAP@K (multi-label) calculate
+def map_at_k_multi_label(y_true_sets, y_pred_lists, k=20):
+    aps = []
+    for true_set, pred in zip(y_true_sets, y_pred_lists):
+        pred_k = pred[:k]
+        if len(true_set) == 0:
+            aps.append(0.0)
+            continue
+
+        hit = 0
+        ap = 0.0
+        for rank, cid in enumerate(pred_k, start=1):
+            if cid in true_set:
+                hit += 1
+                ap += hit / rank
+        ap /= min(k, len(true_set))
+        aps.append(ap)
+    return float(np.mean(aps)) if len(aps) else 0.0
+
+
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg, optimizer, loss_fn, device, pos_weight_tensor=None, n_classes=290):
+    def __init__(self, model, train_loader, val_loader, general_cfg, model_cfg,
+                 optimizer, loss_fn, device, pos_weight_tensor=None, n_classes=290):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -51,19 +71,19 @@ class Trainer:
         if self.freeze:
             self.freeze_backbone()
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = AdamW(trainable_params, lr=self.lr) if optimizer == 'AdamW' else Adam(trainable_params, lr=self.lr, weight_decay=self.wd)
-        #self.scheduler = lr_scheduler.StepLR(self.optimizer, step_size=model_cfg.get('lr_step_size', 10), gamma=model_cfg.get('lr_gamma', 0.1))
+        self.optimizer = AdamW(trainable_params, lr=self.lr) if optimizer == 'AdamW' else Adam(
+            trainable_params, lr=self.lr, weight_decay=self.wd
+        )
+
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode="min",
             factor=0.5,
-            patience=1,      # or 2 if val is noisy
+            patience=1,
             threshold=1e-4,
             min_lr=1e-7
         )
         self.loss_fn = BCEWithLogitsLoss(pos_weight=pos_weight_tensor) if loss_fn == 'BCEWithLogits' else None
-        #self.loss_fn = BCEWithLogitsLoss() if loss_fn == 'BCEWithLogits' else None
-        # can also experiment with label smooting
         self.smoothing_epsilon = general_cfg.get('smooting_epsilon', 0)
         self.device = device
         self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
@@ -81,44 +101,35 @@ class Trainer:
         self.save_dir = general_cfg.get('save_dir', 'evaluation/model_checkpoints/')
         self.save_model = general_cfg.get('save_model', True)
         self.n_classes = n_classes
-        # Entropy OSD calibration params (for test eval)
+
+        # Entropy OSD calibration params
         self.entropy_tau = None
         self.entropy_quantile = general_cfg.get("entropy_quantile", 0.95)
         self.entropy_alpha = general_cfg.get("entropy_alpha", 1.0)
 
-        # Model check
         print(f'[INFO] Model architecture: {type(self.model)}')
-
         print(f'[INFO] Trainer initialized with {self.n_training_examples} training examples and {self.n_validation_examples} validation examples.')
         print(f'lr: {self.lr}, wd: {self.wd}, freeze: {self.freeze}, unfreeze_epoch: {self.unfreeze_epoch}, smooth_ep: {self.smoothing_epsilon}, ', end='')
         print(f'patience: {model_cfg.get("patience", 1)}, criterion: {loss_fn}')
 
     def freeze_backbone(self):
-        '''
-        freezing backbone of model, so only head/fc is trainable
-        '''
-        # freeze everything
         for p in self.model.parameters():
             p.requires_grad = False
 
-        # unfreeze common classifier heads
-        if hasattr(self.model.model, "fc"):  # ResNet-style
+        if hasattr(self.model.model, "fc"):
             for p in self.model.model.fc.parameters():
                 p.requires_grad = True
 
-        if hasattr(self.model.model, "heads"):  # ViT-style
+        if hasattr(self.model.model, "heads"):
             for p in self.model.model.heads.parameters():
                 p.requires_grad = True
 
         print('[INFO] Backbone Frozen')
 
-
     def unfreeze_backbone(self, epoch):
-        # 1) unfreeze everything
         for p in self.model.parameters():
             p.requires_grad = True
 
-        # 2) build parameter groups: backbone vs head, decay vs no_decay
         decay, no_decay = [], []
         head_decay, head_no_decay = [], []
 
@@ -127,19 +138,15 @@ class Trainer:
                 continue
 
             is_head = any(k in name for k in ["fc", "classifier", "head", "heads"])
-            is_no_decay = (p.ndim == 1) or name.endswith(".bias")  # biases + norm scales
+            is_no_decay = (p.ndim == 1) or name.endswith(".bias")
 
             if is_head:
                 (head_no_decay if is_no_decay else head_decay).append(p)
             else:
                 (no_decay if is_no_decay else decay).append(p)
 
-        # Optional: sanity prints
-        # print(len(decay), len(no_decay), len(head_decay), len(head_no_decay))
-
-        # 3) optimizer with discriminative LR
-        backbone_lr = self.lr * 0.01   # try 0.1 first; if unstable, use 0.03 or 0.01
-        head_lr = self.lr * 0.1       # you can also reduce this to self.lr * 0.3 if needed
+        backbone_lr = self.lr * 0.01
+        head_lr = self.lr * 0.1
 
         self.optimizer = AdamW(
             [
@@ -150,63 +157,28 @@ class Trainer:
             ]
         )
 
-
         self.freeze = False
         print(f"[INFO] Unfroze model backbone at epoch {epoch+1}.")
 
-
-
     @staticmethod
     def smooth_labels(targets, epsilon=0.05):
-        '''
-        smoothing labels for robustness
-        
-        :param targets: labels to be smoothened
-        :param epsilon: amount of smoothing
-        '''
-        # for out-of-sample detection, might not be useful
         return targets * (1 - epsilon) + 0.5 * epsilon
-    
 
     @staticmethod
     def energy_score(logits, T=1.0):
-        '''
-        Calculating energy score to implicitly determine osd
-        
-        :param logits: logits predicted by model
-        :param T: hyperparameter to increase/decrease confidence
-        '''
-        # Use stable energy score calculation
-        return -torch.logsumexp(logits/T, dim=1)
-    
-    
+        return -torch.logsumexp(logits / T, dim=1)
+
     @staticmethod
     def energy_to_osd(energy, tau, alpha=1.0):
-        '''
-        normalzing osd score
-        
-        :param energy: Energy calculated with energy score
-        :param tau: to be determined from data
-        :param alpha: Hyperparameter to increase/decrease confidence
-        '''
         return torch.sigmoid(alpha * (energy - tau))
-    
+
     @staticmethod
     def sigmoid_entropy(logits: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
-        """
-        Multi-label Bernoulli entropy averaged over classes.
-        logits: (B, C)
-        returns: (B,)
-        """
         p = torch.sigmoid(logits)
         ent = -(p * (p.clamp_min(eps).log()) + (1 - p) * ((1 - p).clamp_min(eps).log()))
         return ent.mean(dim=1)
 
     def calibrate_entropy_tau(self) -> float:
-        """
-        Calibrate entropy threshold tau on validation set once.
-        Uses a quantile of validation entropies (default 0.95).
-        """
         if self.val_loader is None:
             raise RuntimeError("val_loader is None; cannot calibrate entropy tau.")
 
@@ -226,54 +198,102 @@ class Trainer:
         print(f"[INFO] Calibrated entropy tau={tau:.6f} (quantile={self.entropy_quantile}, alpha={self.entropy_alpha})")
         return tau
 
-    def evaluate_test(self, test_loader, save_csv_path: str | None = None) -> pd.DataFrame:
+    # eval test
+    def evaluate_test(
+        self,
+        test_loader,
+        save_csv_path: str | None = None,
+        new2orig: dict | None = None,
+        compute_metrics_if_gt: bool = False,
+        k: int = 20,
+    ):
         """
-        Test eval loop that computes entropy-based OSD score.
-        Expects each test batch as either:
-          (images, image_id)  OR  (images, image_id, *extras)
-
-        Outputs a DataFrame compatible with fathomnet_metric.score format:
-          image_id, categories, osd
-        where categories is: "k1 k2 k3 ..., osd_prob"
+        Produces:
+          - pred_df: image_id, categories, osd
+          - results: optional metrics if GT exists locally (AUCROC, MAP@20)
+        categories format:
+          "c1 c2 ... c20, osd_prob"
         """
-        # Ensure tau is calibrated on val (NOT on test)
         if self.entropy_tau is None:
             if self.val_loader is None:
-                raise RuntimeError("entropy_tau is None and val_loader is None. Provide val_loader or set entropy_tau.")
+                raise RuntimeError("entropy_tau is None and val_loader is None.")
             self.calibrate_entropy_tau()
 
         self.model.eval()
         rows = []
 
-        threshold = float(self.general_cfg["threshold"])
-        top_k = int(self.general_cfg["top_k"])
+        # optional GT metrics buffers
+        osd_scores, osd_targets = [], []
+        y_true_sets, y_pred_lists = [], []
 
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Test eval (entropy)", unit="batch"):
+            for batch in tqdm(test_loader, desc="Test eval", unit="batch"):
                 images = batch[0].to(self.device)
-                image_id = batch[1]  # list/tuple of ids
+
+                # get image_id
+                # try find list/tuple of ids
+                image_id = None
+                for j in range(1, len(batch)):
+                    bj = batch[j]
+                    if isinstance(bj, (list, tuple)) and len(bj) == images.size(0) and isinstance(bj[0], (str, int)):
+                        image_id = bj
+                        break
+                if image_id is None:
+                    image_id = batch[-1]
+                if torch.is_tensor(image_id):
+                    image_id = image_id.detach().cpu().tolist()
+
+                # optional GT for local evaluation
+                targets = None
+                osd_target = None
+                if compute_metrics_if_gt:
+                    for j in range(1, len(batch)):
+                        bj = batch[j]
+                        if torch.is_tensor(bj) and bj.ndim == 2 and bj.size(0) == images.size(0):
+                            targets = bj
+                            break
+                    for j in range(1, len(batch)):
+                        bj = batch[j]
+                        if torch.is_tensor(bj) and bj.size(0) == images.size(0) and bj.ndim in (1, 2) and bj.numel() == images.size(0):
+                            osd_target = bj.view(-1)
+                            break
 
                 logits = self.model(images)
-
-                # multi-label probs for top-k
                 probs = torch.sigmoid(logits)
-                top_k_probs, top_k_classes = torch.topk(probs, top_k, dim=1)
-                mask_k = top_k_probs >= threshold
 
-                # entropy-based OSD
+                # MAP@20 need ranking
+                topk_probs, topk_idx = torch.topk(probs, k, dim=1)  # (B,k)
+
+                # OSD
                 ent = self.sigmoid_entropy(logits)  # (B,)
                 tau = float(self.entropy_tau)
                 osd_prob = torch.sigmoid(self.entropy_alpha * (ent - tau))  # (B,)
 
-                # build rows
-                for i in range(len(image_id)):
-                    masked = top_k_classes[i][mask_k[i]]
-                    cats = " ".join(str(k.item()) for k in masked)
+                B = probs.size(0)
+                for i in range(B):
+                    pred_ids = topk_idx[i].detach().cpu().tolist()
+                    if new2orig is not None:
+                        pred_ids = [int(new2orig[int(x)]) for x in pred_ids]
+
+                    osd_i = osd_prob[i].detach().cpu().item()
+
+                    cats_str = " ".join(str(x) for x in pred_ids)
                     rows.append({
                         "image_id": image_id[i],
-                        "categories": cats + f", {float(osd_prob[i])}",
-                        "osd": float(osd_prob[i]),
+                        "categories": cats_str + f", {osd_i}",
+                        "osd": osd_i,
                     })
+
+                    if compute_metrics_if_gt and (targets is not None):
+                        gt_idx = torch.where(targets[i].detach().cpu() == 1)[0].tolist()
+                        if new2orig is not None:
+                            gt_idx = [int(new2orig[int(x)]) for x in gt_idx]
+                        y_true_sets.append(set(gt_idx))
+                        y_pred_lists.append(pred_ids)
+
+                    if compute_metrics_if_gt and (osd_target is not None):
+                        osd_targets.append(float(osd_target[i].detach().cpu().item()))
+                        osd_scores.append(float(osd_i))
 
         pred_df = pd.DataFrame(rows)
 
@@ -282,28 +302,16 @@ class Trainer:
             pred_df.to_csv(save_csv_path, index=False)
             print(f"[INFO] Saved test predictions -> {save_csv_path}")
 
-        return pred_df
-    
-    @staticmethod
-    def prepare_dict_for_fathom_df(image_id, targets, top_k, osd_target, osd_prob, mask_k):
-        rows = []
-        row_targets = []
-        for i in range(targets.shape[0]):
-            masked_top_k = top_k[i][mask_k[i]]
-            row = {
-                "image_id": image_id[i],
-                "categories": " ".join([str(k) for k in masked_top_k.tolist()]) + f', {str(osd_prob[i])}',
-                "osd": float(osd_prob[i])
-            }
-            row_target = {
-                "image_id": image_id[i],
-                "categories": " ".join([str(idx.item()) for idx in torch.where(targets[i] == 1)[0]]),
-                "osd": float(osd_target[i])
-            }
-            rows.append(row)
-            row_targets.append(row_target)
+        results = {}
+        if compute_metrics_if_gt and len(osd_targets) > 0 and len(set(osd_targets)) > 1:
+            results["osd_aucroc"] = roc_auc_score(osd_targets, osd_scores)
+        if compute_metrics_if_gt and len(y_true_sets) > 0:
+            results["map@20"] = map_at_k_multi_label(y_true_sets, y_pred_lists, k=20)
 
-        return rows, row_targets
+        if results:
+            print("[TEST METRICS]", results)
+
+        return pred_df, results
 
 
     @staticmethod
@@ -316,18 +324,11 @@ class Trainer:
             n += targets.size(0)
         return pos.numpy(), n
 
-
-
-
     def train(self):
-        '''
-        Train model with hyperparameters set in trainer object
-        '''
         threshold = self.general_cfg['threshold']
         train_pos, _ = self.count_pos_simple(self.train_loader, self.n_classes)
         epochs = self.model_cfg['num_epochs']
         for epoch in range(epochs):
-            # Unfreeze backbone if specified
             if self.freeze and self.unfreeze_epoch is not False and epoch == self.unfreeze_epoch:
                 self.unfreeze_backbone(epoch)
             self.model.train()
@@ -336,31 +337,25 @@ class Trainer:
 
             if not self.general_cfg['test_eval']:
                 pbar = tqdm(
-                self.train_loader,
-                total=len(self.train_loader),
-                desc=f"Epoch {epoch+1}/{epochs}",
-                unit="batch",
-                leave=False,   # set True if you want to keep each epoch bar
+                    self.train_loader,
+                    total=len(self.train_loader),
+                    desc=f"Epoch {epoch+1}/{epochs}",
+                    unit="batch",
+                    leave=False,
                 )
-                for images, targets in pbar:   
+                for images, targets in pbar:
                     images = images.to(self.device)
                     targets = targets.to(self.device)
                     if self.smoothing_epsilon is not None:
                         targets = self.smooth_labels(targets, self.smoothing_epsilon)
                     self.optimizer.zero_grad()
                     logits = self.model(images)
-                    # compute loss, backpropagation, optimizer
                     loss = self.loss_fn(logits, targets)
                     self.batch_train_losses.append(loss.item())
                     running_loss += loss.item() * images.size(0)
                     loss.backward()
                     self.optimizer.step()
-
-                    # update bar text
                     pbar.set_postfix(loss=f"{loss.item():.4f}", avg=f"{(running_loss/self.n_training_examples):.4f}")
-
-            #self.scheduler.step()
-
 
             epoch_avg_loss = running_loss / self.n_training_examples
             self.train_losses.append(epoch_avg_loss)
@@ -371,7 +366,6 @@ class Trainer:
                 ckpt_path = os.path.join(self.save_dir, f"{self.model_cfg['model_name']}_{epoch + 1}.pth")
                 torch.save(self.model.state_dict(), ckpt_path)
 
-            # Validation loop can be added here
             if self.val_loader is not None:
                 self.model.eval()
                 all_targets = []
@@ -379,29 +373,13 @@ class Trainer:
 
                 with torch.no_grad():
                     for _, (images, targets) in enumerate(self.val_loader):
-                        
-
                         images = images.to(self.device)
                         targets = targets.to(self.device)
                         logits = self.model.forward(images)
                         probs = torch.sigmoid(logits)
 
-                        # top_k might have to filtered on threshold because it now always outputs 20 predictions (for example just thresholding probability >=0.5)
                         top_k_probs, top_k_classes = torch.topk(probs, self.general_cfg['top_k'])
                         mask_k = top_k_probs >= threshold
-
-                        '''
-                        # this has to be checked
-                        energy = self.energy_score(logits)
-                        tau = torch.quantile(energy, 0.95)
-                        osd_prob = self.energy_to_osd(energy, tau=tau)'''
-                        
-                        '''
-                        # for future fathomscore calculation
-                        for i in range(targets.shape[0]):
-                            row, row_target = self.prepare_dict_for_fathom_df(image_id, targets, top_k_classes, osd_target, osd_prob, mask_k)
-                            rows.extend(row)
-                            row_targets.extend(row_target)'''
 
                         val_loss = self.loss_fn(logits, targets)
                         self.batch_val_losses.append(val_loss.item())
@@ -409,16 +387,11 @@ class Trainer:
                         all_targets.append(targets.cpu())
                         all_logits.append(logits.cpu())
 
-                '''
-                # creating dataframes from lists for fathomscore calculation
-                target_df = pd.DataFrame(row_targets)
-                predictions_df = pd.DataFrame(rows)'''
-
                 epoch_avg_val_loss = running_val_loss / self.n_validation_examples
                 self.scheduler.step(epoch_avg_val_loss)
                 self.val_losses.append(epoch_avg_val_loss)
                 print(f"Epoch {epoch+1} - Validation loss: {epoch_avg_val_loss}")
-                # evaluate metrics
+
                 all_targets = torch.cat(all_targets, dim=0).numpy()
                 probs = torch.sigmoid(torch.cat(all_logits, dim=0)).numpy()
                 pos = all_targets.sum(axis=0)
@@ -430,27 +403,17 @@ class Trainer:
                 if valid.sum() == 0:
                     print('undef')
                 else:
-                    true_pos_rate = all_targets[:, learnable].mean()  # fraction of ones in the multi-hot matrix
-
-                    #roc_auc = roc_auc_score(all_targets, probs, average="weighted")
-                    # PR AUC (average precision) is already computed below and works with 2D arrays
-                    # predicted postive rate
+                    true_pos_rate = all_targets[:, learnable].mean()
                     roc_auc_micro = roc_auc_score(all_targets, probs, average="micro")
                     roc_auc_macro = roc_auc_score(all_targets, probs, average="weighted")
                     preds = (probs >= 0.5).astype(int)
                     pred_pos_rate = (preds == 1)[:, learnable].mean()
-                    # Macro F1: does the model work for rare classes?
-                    # Micro F1: does the model work overall?
                     f1_macro = f1_score(all_targets, preds, average="macro", zero_division=0)
                     f1_micro = f1_score(all_targets, preds, average="micro", zero_division=0)
-
                     avg_precision = average_precision_score(all_targets[:, valid], probs[:, valid], average="weighted")
                     print(f"valid labels: {valid.sum()}/{all_targets.shape[1]}")
-            
                     print(f"ROC AUC micro: {roc_auc_micro:.4f}, ROC AUC macro: {roc_auc_macro:.4f}, PR AUC: {avg_precision:.4f}, F1_micro: {f1_micro:.4f}, F1_macro: {f1_macro:.4f}")
                     print("true_pos_rate:", true_pos_rate, "pred_pos_rate:", pred_pos_rate)
-
-
 
                     thresholds = np.linspace(0.002, 0.30, 20)
                     best = (0, 0.5)
@@ -461,28 +424,6 @@ class Trainer:
                             best = (f1, t)
                     print("best micro-F1:", best[0], "at threshold:", best[1])
 
-                '''
-                if valid.sum() == 0:
-                    print("ROC-AUC undefined: no class has both positive and negative samples in validation.")
-                else:
-                    roc_auc = roc_auc_score(all_targets[:, valid], probs[:, valid], average="weighted")
-                    avg_precision = average_precision_score(all_targets[:, valid], probs[:, valid], average="weighted")
-                    fathomnet_score = score(
-                        target_df,
-                        predictions_df,
-                        'image_id',
-                        'osd',
-                        20
-                    )
-                    print(f'fathom score: {fathomnet_score}')
-
-                    preds = (probs >= 0.5).astype(int)
-                    f1 = f1_score(all_targets[:, valid], preds[:, valid], average="weighted", zero_division=0)
-
-                    print(f"valid labels: {valid.sum()}/{all_targets.shape[1]}")
-                    print(f"ROC AUC: {roc_auc:.4f}, AP: {avg_precision:.4f}, F1: {f1:.4f}")'''
-
-                # Early stopping check
                 if self.early_stopper.early_stop(epoch_avg_val_loss):
                     print(f"Early stopping triggered at epoch {epoch+1}")
                     break
@@ -490,7 +431,7 @@ class Trainer:
     def plot_losses(self):
         plt.figure(figsize=(10, 5))
         plt.plot(self.train_losses, label='Training Loss')
-        
+
         if len(self.val_losses) > 0:
             plt.plot(self.val_losses, label='Validation Loss')
 
@@ -504,4 +445,3 @@ class Trainer:
         plt.savefig(filename, dpi=300, bbox_inches="tight")
         plt.show()
         plt.close()
-
